@@ -1,19 +1,30 @@
 local scanlines = userdata("f64",11,270)
 
+-- Load modules
+local load_obj = include("obj_loader.lua")
+local ParticleSystem = include("particle_system.lua")
+
 -- VTOL Physics Configuration (easy tweaking)
 local VTOL_THRUST = 0.002  -- Thrust force per thruster
 local VTOL_TORQUE_YAW = 0.001  -- Torque around Y axis (yaw)
 local VTOL_TORQUE_PITCH = 0.0008  -- Torque around X axis (pitch)
 local VTOL_TORQUE_ROLL = 0.0008  -- Torque around Z axis (roll)
 local VTOL_MASS = 30
-local VTOL_GRAVITY = -0.003
+local VTOL_GRAVITY = -0.005
 local VTOL_DAMPING = 0.95  -- Linear velocity damping (air resistance)
 local VTOL_ANGULAR_DAMPING = 0.85 -- Angular velocity damping (rotational drag)
 local VTOL_GROUND_PITCH_DAMPING = 0.8  -- Rotation damping when touching ground (pitch)
 local VTOL_GROUND_ROLL_DAMPING = 0.8   -- Rotation damping when touching ground (roll)
 
+-- Damage Configuration
+local DAMAGE_BUILDING_THRESHOLD = 0.1  -- Minimum speed for building collision damage
+local DAMAGE_GROUND_THRESHOLD = -0.05  -- Minimum vertical velocity for ground impact damage
+local DAMAGE_BUILDING_MULTIPLIER = 50  -- Damage multiplier for building collisions
+local DAMAGE_GROUND_MULTIPLIER = 100   -- Damage multiplier for ground impacts
+
 -- Rendering Configuration
 local RENDER_DISTANCE = 20  -- Far plane / fog distance
+local DEBUG_SHOW_PHYSICS_WIREFRAME = false  -- Toggle physics collision wireframes
 
 -- Minimap Configuration
 local MINIMAP_X = 420  -- Top-right corner
@@ -21,6 +32,14 @@ local MINIMAP_Y = 10
 local MINIMAP_SIZE = 50  -- 50x50 pixels
 local MINIMAP_SCALE = 2  -- World units per pixel
 local MINIMAP_BG_COLOR = 1  -- Dark blue background
+
+-- Game State Management
+local GAME_STATE = {
+	PLAYING = 1,
+	DEAD = 2
+}
+local current_game_state = GAME_STATE.PLAYING
+local death_timer = 0
 
 ---Draws a 3D textured triangle to the screen. Note that the vertices need W components,
 ---and that they need to be the reciprocal of the W which is produced by the projection matrix.
@@ -254,22 +273,158 @@ for i, config in ipairs(building_configs) do
 		x = x,
 		y = 0,
 		z = z,
-		sprite_override = sprite  -- Use sprite from config (0 or 1)
+		sprite_override = sprite,  -- Use sprite from config (0 or 1)
+		-- Store collision dimensions for wireframe rendering
+		width = width * 2,  -- Full width (not half-width)
+		height = height * 2,  -- Full height
+		depth = depth * 2   -- Full depth
 	})
 end
 
--- Load random mesh from random.lua
-local random_mesh = include("random.lua")
 
--- Create hovering object from random mesh
-local hovering_object = {
-	verts = random_mesh.verts,
-	faces = random_mesh.faces,
-	x = 0,       -- Center over city
-	y = 7,       -- Hover above buildings
-	z = 12,      -- Position over city
-	sprite_override = 0  -- Use sprite 0 for testing
+-- Load landing pad mesh from landing_pad.obj
+local landing_pad_mesh = load_obj("landing_pad.obj")
+if not landing_pad_mesh or #landing_pad_mesh.verts == 0 then
+	printh("ERROR: Could not load landing pad mesh, using fallback red cube")
+	-- Create a 3x3 red cube as fallback
+	landing_pad_mesh = {
+		verts = {
+			vec(-1.5, 0, -1.5), vec(1.5, 0, -1.5), vec(1.5, 0, 1.5), vec(-1.5, 0, 1.5),  -- Bottom
+			vec(-1.5, 3, -1.5), vec(1.5, 3, -1.5), vec(1.5, 3, 1.5), vec(-1.5, 3, 1.5)   -- Top
+		},
+		faces = {
+			-- Bottom face
+			{1, 2, 3, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			-- Top face
+			{5, 7, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, 8, vec(0,0), vec(16,16), vec(0,16)},
+			-- Front face
+			{1, 5, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, 8, vec(0,0), vec(16,16), vec(0,16)},
+			-- Back face
+			{3, 7, 8, 8, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			-- Left face
+			{4, 8, 5, 8, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, 8, vec(0,0), vec(16,16), vec(0,16)},
+			-- Right face
+			{2, 6, 7, 8, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, 8, vec(0,0), vec(16,16), vec(0,16)}
+		}
+	}
+end
+
+-- Override sprite to 8 for landing pad (32x32 pixels) and scale UVs to 32x32
+for _, face in ipairs(landing_pad_mesh.faces) do
+	face[4] = 8  -- Set sprite index to 8
+	-- Scale UVs from 16x16 to 32x32 (multiply by 2)
+	if face[5] then face[5] = vec(face[5].x * 2, face[5].y * 2) end
+	if face[6] then face[6] = vec(face[6].x * 2, face[6].y * 2) end
+	if face[7] then face[7] = vec(face[7].x * 2, face[7].y * 2) end
+end
+
+-- Calculate bounding box from landing pad mesh
+local pad_min_x, pad_max_x = 999, -999
+local pad_min_y, pad_max_y = 999, -999
+local pad_min_z, pad_max_z = 999, -999
+
+for _, v in ipairs(landing_pad_mesh.verts) do
+	pad_min_x = min(pad_min_x, v.x)
+	pad_max_x = max(pad_max_x, v.x)
+	pad_min_y = min(pad_min_y, v.y)
+	pad_max_y = max(pad_max_y, v.y)
+	pad_min_z = min(pad_min_z, v.z)
+	pad_max_z = max(pad_max_z, v.z)
+end
+
+local pad_width = pad_max_x - pad_min_x
+local pad_height = pad_max_y - pad_min_y
+local pad_depth = pad_max_z - pad_min_z
+
+printh("Landing pad bounds: w="..pad_width.." h="..pad_height.." d="..pad_depth)
+
+-- Landing pad object at spawn position (moved to the right)
+local landing_pad = {
+	verts = landing_pad_mesh.verts,
+	faces = landing_pad_mesh.faces,
+	x = 5,  -- Moved 5 units to the right
+	y = 0,
+	z = -3,
+	sprite_override = 8,
+	-- Collision box: width/depth from mesh, height fixed at 2m
+	width = pad_width,
+	height = 2,  -- Fixed at 2m for collision (not mesh height)
+	depth = pad_depth
 }
+
+-- Load tree mesh from tree.obj
+local tree_mesh = load_obj("tree.obj")
+if not tree_mesh or #tree_mesh.verts == 0 then
+	printh("ERROR: Could not load tree mesh, using fallback red cube")
+	-- Create a 3x3 red cube as fallback
+	tree_mesh = {
+		verts = {
+			vec(-1.5, 0, -1.5), vec(1.5, 0, -1.5), vec(1.5, 0, 1.5), vec(-1.5, 0, 1.5),  -- Bottom
+			vec(-1.5, 3, -1.5), vec(1.5, 3, -1.5), vec(1.5, 3, 1.5), vec(-1.5, 3, 1.5)   -- Top
+		},
+		faces = {
+			{1, 2, 3, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{5, 7, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{1, 5, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{3, 7, 8, 8, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{4, 8, 5, 8, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{2, 6, 7, 8, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, 8, vec(0,0), vec(16,16), vec(0,16)}
+		}
+	}
+end
+
+-- Override sprite to 6 for all tree faces
+for _, face in ipairs(tree_mesh.faces) do
+	face[4] = 6  -- Set sprite index to 6
+end
+
+-- Generate random tree positions (max 3 per 20m x 20m cell)
+local trees = {}
+local cell_size = 20  -- 20m x 20m cells
+local max_trees_per_cell = 3
+local map_range = 100  -- Place trees in 200x200m area (-100 to 100)
+
+-- Create grid cells and track tree count per cell
+local tree_grid = {}
+
+-- Simple seeded random for consistent tree placement
+local function seeded_random(x, z, seed)
+	local hash = (x * 73856093) ~ (z * 19349663) ~ (seed * 83492791)
+	hash = ((hash ~ (hash >> 13)) * 0x5bd1e995) & 0xffffffff
+	hash = hash ~ (hash >> 15)
+	return (hash & 0x7fffffff) / 0x7fffffff
+end
+
+-- Generate trees with grid-based distribution
+for tree_idx = 1, 150 do  -- Try to place up to 150 trees
+	local x = (seeded_random(tree_idx, 0, 1234) - 0.5) * map_range * 2
+	local z = (seeded_random(tree_idx, 1, 1234) - 0.5) * map_range * 2
+
+	-- Determine which cell this tree falls into
+	local cell_x = flr(x / cell_size)
+	local cell_z = flr(z / cell_size)
+	local cell_key = cell_x .. "," .. cell_z
+
+	-- Initialize cell counter if needed
+	if not tree_grid[cell_key] then
+		tree_grid[cell_key] = 0
+	end
+
+	-- Only place tree if cell has less than max trees
+	if tree_grid[cell_key] < max_trees_per_cell then
+		add(trees, {
+			verts = tree_mesh.verts,
+			faces = tree_mesh.faces,
+			x = x,
+			y = 0,  -- Ground level
+			z = z,
+			sprite_override = 6
+		})
+		tree_grid[cell_key] += 1
+	end
+end
+
+printh("Generated " .. #trees .. " trees across the map")
 
 -- UV coordinates for a full sprite
 local uvs = {
@@ -288,6 +443,15 @@ local camera = {
 	ry = 0,  -- rotation around Y axis
 }
 
+-- Mouse drag state for camera control
+local mouse_drag = {
+	active = false,
+	start_x = 0,
+	start_y = 0,
+	base_rx = 0,
+	base_ry = 0
+}
+
 -- Performance tracking
 local fps_counter = 0
 local fps_timer = 0
@@ -302,21 +466,21 @@ local vert_data_pool = userdata("f64", 6, 3)
 
 -- VTOL Vehicle Physics
 local vtol = {
-	-- Position & rotation (in front of camera)
-	x = 0, y = 1, z = -3,
+	-- Position & rotation (centered on landing pad, 2m up)
+	x = 5, y = 3, z = -3,  -- Aligned with landing pad center (x=5, z=-3), raised 2m (y=3)
 	pitch = 0, yaw = 0, roll = 0,
 
 	-- Velocity & angular velocity
 	vx = 0, vy = 0, vz = 0,
 	vpitch = 0, vyaw = 0, vroll = 0,
 
-	-- Thruster positions (relative to center)
-	thrusters = {
-		{x = 1, z = 0, key = "a", active = false},   -- Right (A)
-		{x = -1, z = 0, key = "d", active = false},  -- Left (D)
-		{x = 0, z = 1, key = "w", active = false},   -- Front (W)
-		{x = 0, z = -1, key = "s", active = false},  -- Back (S)
-	},
+	-- Thruster positions will be set from engine_positions after loading
+	thrusters = {},
+
+	-- Health and damage
+	health = 100,
+	max_health = 100,
+	is_damaged = false,  -- Track if ship is smoking
 
 	-- Physics constants (use globals for easy tweaking)
 	mass = VTOL_MASS,
@@ -326,89 +490,220 @@ local vtol = {
 	angular_damping = VTOL_ANGULAR_DAMPING,
 }
 
--- VTOL cube model (simple cross shape)
-local vtol_verts = {
-	-- Center body
-	vec(-0.3, -0.2, -0.3), vec(0.3, -0.2, -0.3), vec(0.3, 0.2, -0.3), vec(-0.3, 0.2, -0.3),
-	vec(-0.3, -0.2, 0.3), vec(0.3, -0.2, 0.3), vec(0.3, 0.2, 0.3), vec(-0.3, 0.2, 0.3),
-	-- Right thruster arm
-	vec(0.3, -0.1, -0.1), vec(1.2, -0.1, -0.1), vec(1.2, 0.1, -0.1), vec(0.3, 0.1, -0.1),
-	vec(0.3, -0.1, 0.1), vec(1.2, -0.1, 0.1), vec(1.2, 0.1, 0.1), vec(0.3, 0.1, 0.1),
-	-- Left thruster arm
-	vec(-1.2, -0.1, -0.1), vec(-0.3, -0.1, -0.1), vec(-0.3, 0.1, -0.1), vec(-1.2, 0.1, -0.1),
-	vec(-1.2, -0.1, 0.1), vec(-0.3, -0.1, 0.1), vec(-0.3, 0.1, 0.1), vec(-1.2, 0.1, 0.1),
-	-- Front thruster arm
-	vec(-0.1, -0.1, 0.3), vec(0.1, -0.1, 0.3), vec(0.1, 0.1, 0.3), vec(-0.1, 0.1, 0.3),
-	vec(-0.1, -0.1, 1.2), vec(0.1, -0.1, 1.2), vec(0.1, 0.1, 1.2), vec(-0.1, 0.1, 1.2),
-	-- Back thruster arm
-	vec(-0.1, -0.1, -1.2), vec(0.1, -0.1, -1.2), vec(0.1, 0.1, -1.2), vec(-0.1, 0.1, -1.2),
-	vec(-0.1, -0.1, -0.3), vec(0.1, -0.1, -0.3), vec(0.1, 0.1, -0.3), vec(-0.1, 0.1, -0.3),
+-- Load cross_lander mesh from OBJ
+local cross_lander_mesh = load_obj("cross_lander.obj")
+local flame_mesh = load_obj("flame.obj")
+
+-- Fallback to red cubes if OBJ loading fails
+if not cross_lander_mesh or #cross_lander_mesh.verts == 0 then
+	printh("ERROR: Could not load cross_lander mesh, using fallback red cube")
+	cross_lander_mesh = {
+		verts = {
+			vec(-1.5, 0, -1.5), vec(1.5, 0, -1.5), vec(1.5, 0, 1.5), vec(-1.5, 0, 1.5),
+			vec(-1.5, 3, -1.5), vec(1.5, 3, -1.5), vec(1.5, 3, 1.5), vec(-1.5, 3, 1.5)
+		},
+		faces = {
+			{1, 2, 3, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{5, 7, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{1, 5, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{3, 7, 8, 8, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{4, 8, 5, 8, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{2, 6, 7, 8, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, 8, vec(0,0), vec(16,16), vec(0,16)}
+		}
+	}
+end
+if not flame_mesh or #flame_mesh.verts == 0 then
+	printh("ERROR: Could not load flame mesh, using fallback red cube")
+	flame_mesh = {
+		verts = {
+			vec(-0.5, 0, -0.5), vec(0.5, 0, -0.5), vec(0.5, 0, 0.5), vec(-0.5, 0, 0.5),
+			vec(-0.5, 1, -0.5), vec(0.5, 1, -0.5), vec(0.5, 1, 0.5), vec(-0.5, 1, 0.5)
+		},
+		faces = {
+			{1, 2, 3, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{5, 7, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{1, 5, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{3, 7, 8, 8, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{4, 8, 5, 8, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{2, 6, 7, 8, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, 8, vec(0,0), vec(16,16), vec(0,16)}
+		}
+	}
+end
+
+-- Scale down to fit the engine - make it much smaller
+-- Original engine positions in model: (6,-2,0) (-6,-2,0) (0,-2,6) (0,-2,-6)
+local model_scale = 0.15  -- Scale everything down to 15% of original size
+
+local vtol_verts = {}
+for _, v in ipairs(cross_lander_mesh.verts) do
+	add(vtol_verts, vec(
+		v.x * model_scale,
+		v.y * model_scale,
+		v.z * model_scale
+	))
+end
+
+local vtol_faces = cross_lander_mesh.faces
+
+-- Engine positions (scaled from original model)
+-- Original: (6,-2,0) (-6,-2,0) (0,-2,6) (0,-2,-6)
+local engine_positions = {
+	{x = 6 * model_scale, y = -2 * model_scale, z = 0, key = "d"},  -- Right (D)
+	{x = -6 * model_scale, y = -2 * model_scale, z = 0, key = "a"},  -- Left (A)
+	{x = 0, y = -2 * model_scale, z = 6 * model_scale, key = "w"},  -- Front (W)
+	{x = 0, y = -2 * model_scale, z = -6 * model_scale, key = "s"},  -- Back (S)
 }
 
--- Generate simple cube faces for VTOL
-local vtol_faces = {}
-local function add_cube_faces(v_offset, sprite)
-	add(vtol_faces, {v_offset+1, v_offset+2, v_offset+3, sprite, vec(0,0), vec(16,0), vec(16,16)})
-	add(vtol_faces, {v_offset+1, v_offset+3, v_offset+4, sprite, vec(0,0), vec(16,16), vec(0,16)})
-	add(vtol_faces, {v_offset+6, v_offset+5, v_offset+8, sprite, vec(0,0), vec(16,0), vec(16,16)})
-	add(vtol_faces, {v_offset+6, v_offset+8, v_offset+7, sprite, vec(0,0), vec(16,16), vec(0,16)})
-	add(vtol_faces, {v_offset+5, v_offset+1, v_offset+4, sprite, vec(0,0), vec(16,0), vec(16,16)})
-	add(vtol_faces, {v_offset+5, v_offset+4, v_offset+8, sprite, vec(0,0), vec(16,16), vec(0,16)})
-	add(vtol_faces, {v_offset+2, v_offset+6, v_offset+7, sprite, vec(0,0), vec(16,0), vec(16,16)})
-	add(vtol_faces, {v_offset+2, v_offset+7, v_offset+3, sprite, vec(0,0), vec(16,16), vec(0,16)})
-	add(vtol_faces, {v_offset+4, v_offset+3, v_offset+7, sprite, vec(0,0), vec(16,0), vec(16,16)})
-	add(vtol_faces, {v_offset+4, v_offset+7, v_offset+8, sprite, vec(0,0), vec(16,16), vec(0,16)})
-	add(vtol_faces, {v_offset+5, v_offset+6, v_offset+2, sprite, vec(0,0), vec(16,0), vec(16,16)})
-	add(vtol_faces, {v_offset+5, v_offset+2, v_offset+1, sprite, vec(0,0), vec(16,16), vec(0,16)})
+-- Add flame models at each engine position (single layer with animation)
+local flame_face_indices = {}
+local flame_base_verts = {}  -- Store base vertex positions for animation
+for i, engine in ipairs(engine_positions) do
+	local flame_verts_start = #vtol_verts
+
+	for _, v in ipairs(flame_mesh.verts) do
+		add(vtol_verts, vec(
+			v.x * model_scale + engine.x,
+			v.y * model_scale + engine.y,
+			v.z * model_scale + engine.z
+		))
+		-- Store base position for animation
+		add(flame_base_verts, {
+			base_x = v.x * model_scale + engine.x,
+			base_y = v.y * model_scale + engine.y,
+			base_z = v.z * model_scale + engine.z,
+			offset_x = (v.x - 2.3394) * model_scale,  -- Offset from flame center
+			offset_y = (v.y - 0.3126) * model_scale,
+			offset_z = (v.z + 2.7187) * model_scale,
+			engine_idx = i
+		})
+	end
+
+	local faces_start = #vtol_faces + 1
+	for _, face in ipairs(flame_mesh.faces) do
+		add(vtol_faces, {
+			face[1] + flame_verts_start,
+			face[2] + flame_verts_start,
+			face[3] + flame_verts_start,
+			3,  -- Use sprite 3 for flames
+			face[5], face[6], face[7]
+		})
+	end
+	local faces_end = #vtol_faces
+
+	-- Track flame faces
+	add(flame_face_indices, {start_idx = faces_start, end_idx = faces_end, thruster_idx = i})
+
+	-- Add thruster to VTOL (for physics)
+	add(vtol.thrusters, {x = engine.x, z = engine.z, key = engine.key, active = false})
 end
 
--- Center body (sprite 0)
-add_cube_faces(0, 0)
--- Right arm (sprite 1)
-add_cube_faces(8, 1)
--- Left arm (sprite 1)
-add_cube_faces(16, 1)
--- Front arm (sprite 1)
-add_cube_faces(24, 1)
--- Back arm (sprite 1)
-add_cube_faces(32, 1)
+-- Smoke particle system (using ParticleSystem module)
+local smoke_system = ParticleSystem.new({
+	size = 0.16,
+	max_particles = 4,
+	lifetime = 2.0,
+	spawn_rate = 0.3,
+	sprite_id = 5,  -- Grey smoke sprite
+	scale_growth = 1.5
+})
+local smoke_spawn_timer = 0
+local smoke_spawn_rate = 0.3  -- Base spawn rate (can be modified based on damage)
 
--- Flame cubes (one for each thruster, sprite 3 for red flames)
--- Right thruster flame
-local flame_verts_start = #vtol_verts
-for _, v in ipairs(cube_verts) do
-	add(vtol_verts, vec(v.x * 0.15 + 1, v.y * 0.15 - 0.3, v.z * 0.15))
+-- Function to reset game to initial state
+local function reset_game()
+	-- Reset VTOL state (centered on landing pad, 2m up)
+	vtol.x = 5
+	vtol.y = 3
+	vtol.z = -3
+	vtol.pitch = 0
+	vtol.yaw = 0
+	vtol.roll = 0
+	vtol.vx = 0
+	vtol.vy = 0
+	vtol.vz = 0
+	vtol.vpitch = 0
+	vtol.vyaw = 0
+	vtol.vroll = 0
+	vtol.health = vtol.max_health
+	vtol.is_damaged = false
+
+	-- Reset camera
+	camera.x = 0
+	camera.y = 3
+	camera.z = -8
+	camera.rx = 0
+	camera.ry = 0
+
+	-- Deactivate all smoke particles
+	for particle in all(smoke_system.particles) do
+		particle.active = false
+		particle.life = 0
+	end
+
+	-- Reset game state
+	current_game_state = GAME_STATE.PLAYING
+	death_timer = 0
+	smoke_spawn_timer = 0
 end
-add_cube_faces(flame_verts_start, 3)
 
--- Left thruster flame
-flame_verts_start = #vtol_verts
-for _, v in ipairs(cube_verts) do
-	add(vtol_verts, vec(v.x * 0.15 - 1, v.y * 0.15 - 0.3, v.z * 0.15))
+-- Helper function to draw wireframe collision box
+local function draw_collision_wireframe(x, y, z, width, height, depth, color)
+	-- Calculate 8 corners of the box
+	local hw, hh, hd = width/2, height/2, depth/2
+	local corners = {
+		vec(x - hw, y, z - hd),      -- bottom front left
+		vec(x + hw, y, z - hd),      -- bottom front right
+		vec(x + hw, y, z + hd),      -- bottom back right
+		vec(x - hw, y, z + hd),      -- bottom back left
+		vec(x - hw, y + height, z - hd),  -- top front left
+		vec(x + hw, y + height, z - hd),  -- top front right
+		vec(x + hw, y + height, z + hd),  -- top back right
+		vec(x - hw, y + height, z + hd),  -- top back left
+	}
+
+	-- Project corners to screen space
+	local projected = {}
+	local fov = 70
+	local fov_rad = fov * 0.5 * 0.0174533
+	local tan_half_fov = sin(fov_rad) / cos(fov_rad)
+	local cam_dist = 3
+
+	for i, corner in ipairs(corners) do
+		local cx, cy, cz = corner.x - camera.x, corner.y - camera.y, corner.z - camera.z
+
+		-- Apply camera rotation
+		local cos_ry, sin_ry = cos(camera.ry), sin(camera.ry)
+		local cos_rx, sin_rx = cos(camera.rx), sin(camera.rx)
+
+		local x2 = cx * cos_ry - cz * sin_ry
+		local z2 = cx * sin_ry + cz * cos_ry
+
+		local y2 = cy * cos_rx - z2 * sin_rx
+		local z3 = cy * sin_rx + z2 * cos_rx
+
+		z3 += cam_dist
+
+		if z3 > 0.01 then
+			local px = x2 / z3 * (270 / tan_half_fov) + 240
+			local py = y2 / z3 * (270 / tan_half_fov) + 135
+			projected[i] = {x = px, y = py}
+		end
+	end
+
+	-- Draw lines between corners if both endpoints are visible
+	local edges = {
+		{1, 2}, {2, 3}, {3, 4}, {4, 1},  -- bottom
+		{5, 6}, {6, 7}, {7, 8}, {8, 5},  -- top
+		{1, 5}, {2, 6}, {3, 7}, {4, 8}   -- vertical
+	}
+
+	for _, edge in ipairs(edges) do
+		local p1, p2 = projected[edge[1]], projected[edge[2]]
+		if p1 and p2 then
+			line(p1.x, p1.y, p2.x, p2.y, color)
+		end
+	end
 end
-add_cube_faces(flame_verts_start, 3)
-
--- Front thruster flame
-flame_verts_start = #vtol_verts
-for _, v in ipairs(cube_verts) do
-	add(vtol_verts, vec(v.x * 0.15, v.y * 0.15 - 0.3, v.z * 0.15 + 1))
-end
-add_cube_faces(flame_verts_start, 3)
-
--- Back thruster flame
-flame_verts_start = #vtol_verts
-for _, v in ipairs(cube_verts) do
-	add(vtol_verts, vec(v.x * 0.15, v.y * 0.15 - 0.3, v.z * 0.15 - 1))
-end
-add_cube_faces(flame_verts_start, 3)
-
--- Track which faces are flames (last 48 faces, 12 per flame cube)
-local flame_face_indices = {
-	{start_idx = #vtol_faces - 47, end_idx = #vtol_faces - 36, thruster_idx = 1},  -- Right
-	{start_idx = #vtol_faces - 35, end_idx = #vtol_faces - 24, thruster_idx = 2},  -- Left
-	{start_idx = #vtol_faces - 23, end_idx = #vtol_faces - 12, thruster_idx = 3},  -- Front
-	{start_idx = #vtol_faces - 11, end_idx = #vtol_faces, thruster_idx = 4},       -- Back
-}
 
 -- Helper function to project and render a mesh
 local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll)
@@ -588,10 +883,49 @@ function _update()
 		fps_timer = 0
 	end
 
-	-- Mouse camera control
-	local mouse_x, mouse_y = mouse()
-	camera.ry = (mouse_x - 240) / 240 * 0.5  -- Horizontal mouse controls yaw
-	camera.rx = (mouse_y - 135) / 135 * 0.3  -- Vertical mouse controls pitch
+	-- Check for death
+	if vtol.health <= 0 and current_game_state == GAME_STATE.PLAYING then
+		current_game_state = GAME_STATE.DEAD
+		death_timer = 0
+	end
+
+	-- Handle death state
+	if current_game_state == GAME_STATE.DEAD then
+		death_timer += delta_time
+
+		-- Check for restart input (any key or mouse click)
+		if key("x") or key("z") or key("space") or key("return") then
+			reset_game()
+		end
+
+		-- Don't update game logic when dead
+		return
+	end
+
+	-- Mouse camera control (drag-based rotation)
+	local mouse_x, mouse_y, mouse_buttons = mouse()
+	local left_button_down = mouse_buttons & 0x1 == 0x1
+
+	if left_button_down then
+		if not mouse_drag.active then
+			-- Start dragging - record initial position and current rotation
+			mouse_drag.active = true
+			mouse_drag.start_x = mouse_x
+			mouse_drag.start_y = mouse_y
+			mouse_drag.base_rx = camera.rx
+			mouse_drag.base_ry = camera.ry
+		else
+			-- Dragging - update rotation based on distance from start
+			local delta_x = mouse_x - mouse_drag.start_x
+			local delta_y = mouse_y - mouse_drag.start_y
+
+			camera.ry = mouse_drag.base_ry + (delta_x / 240) * 0.5
+			camera.rx = mouse_drag.base_rx + (delta_y / 135) * 0.3
+		end
+	else
+		-- Button released - stop dragging
+		mouse_drag.active = false
+	end
 
 	-- -- Rotate with Z and X (slower)
 	-- local rot_speed = 0.005
@@ -628,6 +962,25 @@ function _update()
 	-- if key("s") then  -- S - move down
 	-- 	camera.y -= move_speed
 	-- end
+
+	-- Animate flame vertices (subtle flickering with noise)
+	local flame_time = time() * 6  -- Animation speed
+	for i, base_vert in ipairs(flame_base_verts) do
+		-- Base flicker (subtle sine wave)
+		local base_flicker = sin(flame_time + base_vert.engine_idx * 2.5) * 0.03
+
+		-- Add noise (combine multiple sine waves at different frequencies)
+		local noise = sin(flame_time * 3.7 + i * 0.5) * 0.015
+		noise += sin(flame_time * 7.2 + i * 1.3) * 0.01
+
+		local scale_mod = 1.0 + base_flicker + noise
+
+		-- Apply animated scale to flame vertices
+		local vert_idx = #cross_lander_mesh.verts + i
+		vtol_verts[vert_idx].x = base_vert.base_x + base_vert.offset_x * (scale_mod - 1.0)
+		vtol_verts[vert_idx].y = base_vert.base_y + base_vert.offset_y * (scale_mod - 1.0) * 1.2  -- Slight Y stretching
+		vtol_verts[vert_idx].z = base_vert.base_z + base_vert.offset_z * (scale_mod - 1.0)
+	end
 
 	-- VTOL Physics Update
 	-- Apply gravity
@@ -747,6 +1100,18 @@ function _update()
 						vtol.z = building.z + half_depth + 0.1
 					end
 
+					-- Calculate collision velocity for damage
+					local collision_speed = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
+					if collision_speed > DAMAGE_BUILDING_THRESHOLD then
+						local damage = collision_speed * DAMAGE_BUILDING_MULTIPLIER
+						vtol.health -= damage
+
+						-- Start smoking if health is low
+						if vtol.health < 50 then
+							vtol.is_damaged = true
+						end
+					end
+
 					-- Kill velocity when hitting side
 					vtol.vx *= 0.5
 					vtol.vz *= 0.5
@@ -758,15 +1123,99 @@ function _update()
 		end
 	end
 
+	-- Landing pad collision (same logic as buildings)
+	local half_width = landing_pad.width / 2
+	local half_depth = landing_pad.depth / 2
+	local dx = vtol.x - landing_pad.x
+	local dz = vtol.z - landing_pad.z
+
+	if abs(dx) < half_width and abs(dz) < half_depth then
+		-- VTOL is horizontally above/inside landing pad
+		if vtol.y < landing_pad.height then
+			-- Side collision with landing pad
+			local push_x = 0
+			local push_z = 0
+
+			-- Find closest edge
+			local dist_left = abs(dx + half_width)
+			local dist_right = abs(dx - half_width)
+			local dist_front = abs(dz + half_depth)
+			local dist_back = abs(dz - half_depth)
+
+			local min_dist = min(dist_left, dist_right, dist_front, dist_back)
+
+			if min_dist == dist_left then
+				vtol.x = landing_pad.x - half_width - 0.1
+			elseif min_dist == dist_right then
+				vtol.x = landing_pad.x + half_width + 0.1
+			elseif min_dist == dist_front then
+				vtol.z = landing_pad.z - half_depth - 0.1
+			else
+				vtol.z = landing_pad.z + half_depth + 0.1
+			end
+
+			-- Calculate collision velocity for damage
+			local collision_speed = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
+			if collision_speed > DAMAGE_BUILDING_THRESHOLD then
+				local damage = collision_speed * DAMAGE_BUILDING_MULTIPLIER
+				vtol.health -= damage
+
+				-- Start smoking if health is low
+				if vtol.health < 50 then
+					vtol.is_damaged = true
+				end
+			end
+
+			-- Kill velocity when hitting side
+			vtol.vx *= 0.5
+			vtol.vz *= 0.5
+		else
+			-- Above landing pad - it's a landing surface
+			ground_height = max(ground_height, landing_pad.height)
+		end
+	end
+
 	-- Ground/rooftop collision (use 0.5 offset for VTOL center)
 	local landing_height = ground_height + 0.5
 	if vtol.y < landing_height then
+		-- Check impact velocity for damage
+		if vtol.vy < DAMAGE_GROUND_THRESHOLD then  -- Hard landing
+			local damage = abs(vtol.vy) * DAMAGE_GROUND_MULTIPLIER
+			vtol.health -= damage
+
+			-- Start smoking if health is low
+			if vtol.health < 50 then
+				vtol.is_damaged = true
+			end
+		end
+
 		vtol.y = landing_height
 		vtol.vy = 0
 		-- Dampen rotation when touching any surface
 		vtol.vpitch *= VTOL_GROUND_PITCH_DAMPING
 		vtol.vroll *= VTOL_GROUND_ROLL_DAMPING
 	end
+
+	-- Smoke particle spawning (only when damaged)
+	local health_percent = vtol.health / vtol.max_health * 100
+	if health_percent <= 70 then
+		smoke_spawn_timer += delta_time
+
+		-- Adjust spawn rate based on damage severity
+		local spawn_rate = smoke_spawn_rate
+		if health_percent <= 50 then spawn_rate = 0.2 end
+		if health_percent <= 30 then spawn_rate = 0.15 end
+
+		-- Spawn new particle if timer expired
+		if smoke_spawn_timer >= spawn_rate then
+			smoke_spawn_timer = 0
+			-- Spawn particle at ship center with inherited velocity
+			smoke_system:spawn(vtol.x, vtol.y, vtol.z, vtol.vx, vtol.vy, vtol.vz)
+		end
+	end
+
+	-- Update smoke particle system
+	smoke_system:update(delta_time)
 
 	-- Camera follows VTOL with smooth lerp (doesn't drift too far)
 	local camera_offset = 5  -- Distance behind VTOL
@@ -786,6 +1235,36 @@ end
 
 function _draw()
 	cls(0)
+
+	-- Show death screen
+	if current_game_state == GAME_STATE.DEAD then
+		-- Dark overlay
+		rectfill(0, 0, 480, 270, 0)
+
+		-- "YOU DIED" text with shadow
+		local death_text = "YOU DIED"
+		local text_x = 240 - (#death_text * 4)
+		local text_y = 100
+
+		-- Shadow
+		print(death_text, text_x + 2, text_y + 2, 0)
+		-- Main text (red)
+		print(death_text, text_x, text_y, 8)
+
+		-- Stats
+		local stats_y = 130
+		print("FINAL HULL: "..flr(max(0, vtol.health)).."%", 240 - 60, stats_y, 7)
+
+		-- Restart prompt (flashing)
+		local flash = (time() * 2) % 1 > 0.5
+		if flash then
+			local prompt = "PRESS ANY KEY TO RESTART"
+			local prompt_x = 240 - (#prompt * 2)
+			print(prompt, prompt_x, 160, 11)
+		end
+
+		return
+	end
 
 	-- Reset culling counters
 	objects_rendered = 0
@@ -816,18 +1295,34 @@ function _draw()
 		end
 	end
 
-	-- Render hovering object from random.lua
-	local hovering_faces = render_mesh(
-		hovering_object.verts,
-		hovering_object.faces,
-		hovering_object.x,
-		hovering_object.y,
-		hovering_object.z,
-		hovering_object.sprite_override
+	-- Render landing pad
+	local pad_faces = render_mesh(
+		landing_pad.verts,
+		landing_pad.faces,
+		landing_pad.x,
+		landing_pad.y,
+		landing_pad.z,
+		landing_pad.sprite_override
 	)
-	for _, f in ipairs(hovering_faces) do
+	for _, f in ipairs(pad_faces) do
 		add(all_faces, f)
 	end
+
+	-- Render all trees
+	for _, tree in ipairs(trees) do
+		local tree_faces = render_mesh(
+			tree.verts,
+			tree.faces,
+			tree.x,
+			tree.y,
+			tree.z,
+			tree.sprite_override
+		)
+		for _, f in ipairs(tree_faces) do
+			add(all_faces, f)
+		end
+	end
+
 
 	-- Get sphere faces (floating above the city)
 	local sphere_sorted = render_mesh(sphere_verts, sphere_faces, 0, 5, 0)
@@ -835,24 +1330,28 @@ function _draw()
 		add(all_faces, f)
 	end
 
-	-- Render VTOL with rotation (filter flame faces based on active thrusters)
+	-- Render smoke particles using particle system
+	local smoke_faces = smoke_system:render(render_mesh)
+	for _, f in ipairs(smoke_faces) do
+		f.is_vtol = true  -- Mark smoke as VTOL-related
+		add(all_faces, f)
+	end
+
+	-- Render VTOL with rotation (filter flame faces only - smoke is now independent)
 	local vtol_faces_filtered = {}
 	for i, face in ipairs(vtol_faces) do
-		local is_flame = false
 		local should_show = true
 
 		-- Check if this face is a flame
 		for _, flame_info in ipairs(flame_face_indices) do
 			if i >= flame_info.start_idx and i <= flame_info.end_idx then
-				is_flame = true
 				-- Only show flame if thruster is active
 				should_show = vtol.thrusters[flame_info.thruster_idx].active
 				break
 			end
 		end
 
-		-- Add face if it's not a flame, or if it's a flame and thruster is active
-		if not is_flame or should_show then
+		if should_show then
 			add(vtol_faces_filtered, face)
 		end
 	end
@@ -870,7 +1369,50 @@ function _draw()
 		vtol.roll
 	)
 	for _, f in ipairs(vtol_sorted) do
+		f.is_vtol = true  -- Mark VTOL faces
 		add(all_faces, f)
+	end
+
+	-- Special case: VTOL always renders in front when landed on a surface
+	-- Check if VTOL is within horizontal bounds of landing pad or any building
+	local vtol_on_surface = false
+
+	-- Check landing pad bounds
+	local pad_hw, pad_hd = landing_pad.width / 2, landing_pad.depth / 2
+	if abs(vtol.x - landing_pad.x) < pad_hw and abs(vtol.z - landing_pad.z) < pad_hd then
+		-- VTOL is above/on landing pad
+		if vtol.y <= landing_pad.height + 1 then  -- Within 1m of landing pad top
+			vtol_on_surface = true
+		end
+	end
+
+	-- Check building bounds
+	if not vtol_on_surface then
+		for i, building in ipairs(buildings) do
+			local config = building_configs[i]
+			if config then
+				local hw, hd = config.width, config.depth
+				local building_height = config.height * 2
+				if abs(vtol.x - building.x) < hw and abs(vtol.z - building.z) < hd then
+					-- VTOL is above/on building
+					if vtol.y <= building_height + 1 then  -- Within 1m of building top
+						vtol_on_surface = true
+						break
+					end
+				end
+			end
+		end
+	end
+
+	-- If VTOL is on a surface, bias ONLY VTOL faces to render in front
+	-- Landing pad and buildings still sort normally with each other
+	if vtol_on_surface then
+		for _, f in ipairs(all_faces) do
+			-- Only bias faces marked as VTOL (ship, flames, smoke)
+			if f.is_vtol then
+				f.depth = f.depth - 100  -- Move VTOL/smoke faces much closer for sorting
+			end
+		end
 	end
 
 	-- Sort all faces by depth (back to front - painter's algorithm)
@@ -886,6 +1428,13 @@ function _draw()
 		all_faces[j + 1] = key
 	end
 
+	-- Calculate if ship should flash red (critically damaged)
+	local health_percent = vtol.health / vtol.max_health
+	local ship_flash_red = false
+	if health_percent < 0.2 then  -- Below 20%
+		ship_flash_red = (time() * 4) % 1 > 0.5  -- Flash on/off
+	end
+
 	-- Draw all faces in sorted order (reuse pooled userdata)
 	for _, f in ipairs(all_faces) do
 		local face = f.face
@@ -893,6 +1442,12 @@ function _draw()
 		local uv1 = face[5] or vec(0,0)
 		local uv2 = face[6] or vec(16,0)
 		local uv3 = face[7] or vec(16,16)
+
+		-- Apply red flash to ship sprite (sprite 0) when critically damaged
+		local render_sprite = sprite_id
+		if sprite_id == 0 and ship_flash_red then
+			render_sprite = 8  -- Red sprite for flash effect
+		end
 
 		-- Reuse pooled vert_data (no allocation!)
 		-- Vertex 1
@@ -905,8 +1460,58 @@ function _draw()
 		vert_data_pool[12], vert_data_pool[13], vert_data_pool[14], vert_data_pool[15], vert_data_pool[16], vert_data_pool[17] =
 			f.p3.x, f.p3.y, 0, f.p3.w, uv3.x, uv3.y
 
-		textri({tex = sprite_id}, vert_data_pool, 270)
+		-- Apply dithering for flame sprites (sprite 3) and smoke sprites (sprite 5)
+		if sprite_id == 3 then
+			fillp(0b0101101001011010)  -- 50% dither pattern for flames
+		elseif sprite_id == 5 then
+			-- Smoke sprite with graduated opacity
+			local opacity = f.opacity or 1.0
+
+			-- Use different dither patterns for different opacity levels
+			if opacity < 0.25 then
+				fillp(0b1000000010000000)  -- ~12.5% opacity (very sparse)
+			elseif opacity < 0.5 then
+				fillp(0b1000010010000100)  -- ~25% opacity
+			elseif opacity < 0.75 then
+				fillp(0b0101101001011010)  -- 50% opacity
+			else
+				fillp(0b0111111101111111)  -- ~87.5% opacity (mostly solid)
+			end
+		else
+			fillp()  -- Reset to solid
+		end
+
+		textri({tex = render_sprite}, vert_data_pool, 270)
 	end
+
+	fillp()  -- Reset fill pattern after drawing
+
+	-- Health bar
+	local health_bar_x = 2
+	local health_bar_y = 250
+	local health_bar_width = 100
+	local health_bar_height = 8
+
+	-- Background (dark)
+	rectfill(health_bar_x, health_bar_y, health_bar_x + health_bar_width, health_bar_y + health_bar_height, 1)
+
+	-- Health fill (color based on health level)
+	local health_percent = vtol.health / vtol.max_health
+	local health_width = health_bar_width * max(0, health_percent)
+	local health_color = 11  -- Green
+	if health_percent < 0.3 then
+		health_color = 8  -- Red
+	elseif health_percent < 0.6 then
+		health_color = 9  -- Orange
+	end
+
+	rectfill(health_bar_x, health_bar_y, health_bar_x + health_width, health_bar_y + health_bar_height, health_color)
+
+	-- Border
+	rect(health_bar_x, health_bar_y, health_bar_x + health_bar_width, health_bar_y + health_bar_height, 7)
+
+	-- Health text
+	print("HULL: "..flr(max(0, vtol.health)).."%", health_bar_x + 2, health_bar_y + 1, 7)
 
 	-- Performance info
 	local cpu = stat(1) * 100
@@ -915,6 +1520,11 @@ function _draw()
 	print("Tris: "..#all_faces, 2, 18, 11)
 	print("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled.." (culled: "..objects_culled..")", 2, 26, 11)
 	print("VTOL: x="..flr(vtol.x*10)/10 .." y="..flr(vtol.y*10)/10 .." z="..flr(vtol.z*10)/10, 2, 34, 10)
+
+	-- Velocity debug info
+	local vel_total = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
+	print("VEL: "..flr(vel_total*1000)/1000, 2, 42, 10)
+	print("  vx="..flr(vtol.vx*1000)/1000 .." vy="..flr(vtol.vy*1000)/1000 .." vz="..flr(vtol.vz*1000)/1000, 2, 50, 6)
 
 	-- -- Debug: show button states
 	-- local w_state = key("w") and "W" or "-"
@@ -952,13 +1562,6 @@ function _draw()
 		end
 	end
 
-	-- Draw hovering object
-	local hx = MINIMAP_X + MINIMAP_SIZE / 2 + (hovering_object.x - camera.x) / MINIMAP_SCALE
-	local hy = MINIMAP_Y + MINIMAP_SIZE / 2 + (hovering_object.z - camera.z) / MINIMAP_SCALE
-	if hx >= MINIMAP_X and hx <= MINIMAP_X + MINIMAP_SIZE and
-	   hy >= MINIMAP_Y and hy <= MINIMAP_Y + MINIMAP_SIZE then
-		circfill(hx, hy, 2, 14)  -- Pink/magenta circle for hovering object
-	end
 
 	-- Draw VTOL (blinking yellow dot)
 	local blink = (time() * 4) % 1 > 0.5  -- Blink 4 times per second
@@ -1041,4 +1644,31 @@ function _draw()
 	-- Altitude counter (1 world unit = 10 meters)
 	local altitude_meters = vtol.y * 10
 	print("ALT: "..flr(altitude_meters).."m", compass_x + 20, compass_y - 3, 11)
+
+	-- Draw physics wireframes (if enabled)
+	if DEBUG_SHOW_PHYSICS_WIREFRAME then
+		-- Draw landing pad collision box (green)
+		draw_collision_wireframe(
+			landing_pad.x,
+			landing_pad.y,
+			landing_pad.z,
+			landing_pad.width,
+			landing_pad.height,
+			landing_pad.depth,
+			11  -- Green
+		)
+
+		-- Draw building collision boxes (red)
+		for _, building in ipairs(buildings) do
+			draw_collision_wireframe(
+				building.x,
+				building.y,
+				building.z,
+				building.width,
+				building.height,
+				building.depth,
+				8  -- Red
+			)
+		end
+	end
 end
