@@ -20,15 +20,8 @@ function ParticleSystem.new(config)
 	self.particles = {}
 	self.spawn_timer = 0
 
-	-- Base vertices for a diamond particle (will be scaled/rotated per instance)
-	self.base_verts = {
-		vec(0, self.particle_size, 0),    -- Top
-		vec(0, -self.particle_size, 0),   -- Bottom
-		vec(self.particle_size, 0, 0),    -- Right
-		vec(-self.particle_size, 0, 0),   -- Left
-		vec(0, 0, self.particle_size),    -- Front
-		vec(0, 0, -self.particle_size),   -- Back
-	}
+	-- Billboard mode: use camera-facing quads instead of 3D meshes for performance
+	self.use_billboards = config.use_billboards or true
 
 	-- Initialize particle pool
 	for i = 1, self.max_particles do
@@ -109,7 +102,9 @@ function ParticleSystem:update(dt)
 end
 
 -- Render all active particles (returns faces to add to render queue)
-function ParticleSystem:render(render_mesh_func)
+-- @param render_mesh_func: function to render 3D meshes (or nil for billboards)
+-- @param camera: camera object for billboard orientation (required if using billboards)
+function ParticleSystem:render(render_mesh_func, camera)
 	local all_particle_faces = {}
 
 	for particle in all(self.particles) do
@@ -117,45 +112,60 @@ function ParticleSystem:render(render_mesh_func)
 			local life_progress = particle.life / self.particle_lifetime
 
 			-- Scale grows over lifetime
-			local scale = 1.0 + life_progress * self.scale_growth
+			local scale = (1.0 + life_progress * self.scale_growth) * self.particle_size
 
-			-- Opacity grows from 25% to 100% over lifetime (starts at 75% transparent)
+			-- Opacity grows from 25% to 100% over lifetime
 			local opacity = 0.25 + (life_progress * 0.75)
 
 			if opacity > 0 then
-				-- Create temporary vertices for this particle with scale only (no rotation)
-				local particle_verts = {}
+				if self.use_billboards and camera then
+					-- BILLBOARD MODE: Create camera-facing quad
+					-- Calculate camera's right and up vectors in world space
+					local half_size = scale
 
-				for _, base_v in ipairs(self.base_verts) do
-					local x, y, z = base_v.x * scale, base_v.y * scale, base_v.z * scale
-					add(particle_verts, vec(x, y, z))
-				end
+					-- Camera forward vector (direction camera is looking)
+					local forward_x = sin(camera.ry) * cos(camera.rx)
+					local forward_y = sin(camera.rx)  -- Inverted pitch
+					local forward_z = cos(camera.ry) * cos(camera.rx)
 
-				-- Create faces for the diamond (8 triangular faces)
-				local diamond_faces = {
-					{1, 3, 5, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},  -- Top-Right-Front
-					{1, 5, 4, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},  -- Top-Front-Left
-					{1, 4, 6, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},  -- Top-Left-Back
-					{1, 6, 3, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},  -- Top-Back-Right
-					{2, 5, 3, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},  -- Bottom-Front-Right
-					{2, 4, 5, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},  -- Bottom-Left-Front
-					{2, 6, 4, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},  -- Bottom-Back-Left
-					{2, 3, 6, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},  -- Bottom-Right-Back
-				}
+					-- Camera right vector (perpendicular to forward, in XZ plane)
+					local right_x = cos(camera.ry)
+					local right_y = 0
+					local right_z = -sin(camera.ry)
 
-				-- Render particle at its world position
-				local particle_sorted = render_mesh_func(
-					particle_verts,
-					diamond_faces,
-					particle.x,
-					particle.y,
-					particle.z
-				)
+					-- Camera up vector (cross product of forward and right, inverted)
+					local up_x = -(forward_y * right_z - forward_z * right_y)
+					local up_y = -(forward_z * right_x - forward_x * right_z)
+					local up_z = -(forward_x * right_y - forward_y * right_x)
 
-				-- Add opacity information to each face
-				for _, f in ipairs(particle_sorted) do
-					f.opacity = opacity  -- Store opacity for graduated dithering
-					add(all_particle_faces, f)
+					-- Build quad vertices using right and up vectors
+					local billboard_verts = {
+						vec(-right_x * half_size + up_x * half_size, -right_y * half_size + up_y * half_size, -right_z * half_size + up_z * half_size),  -- Top-left
+						vec(right_x * half_size + up_x * half_size, right_y * half_size + up_y * half_size, right_z * half_size + up_z * half_size),    -- Top-right
+						vec(right_x * half_size - up_x * half_size, right_y * half_size - up_y * half_size, right_z * half_size - up_z * half_size),    -- Bottom-right
+						vec(-right_x * half_size - up_x * half_size, -right_y * half_size - up_y * half_size, -right_z * half_size - up_z * half_size),  -- Bottom-left
+					}
+
+					-- Billboard faces: two triangles forming a quad
+					local billboard_faces = {
+						{1, 2, 3, self.sprite_id, vec(0,0), vec(16,0), vec(16,16)},    -- First triangle
+						{1, 3, 4, self.sprite_id, vec(0,0), vec(16,16), vec(0,16)},    -- Second triangle
+					}
+
+					-- Render billboard at particle position
+					local particle_sorted = render_mesh_func(
+						billboard_verts,
+						billboard_faces,
+						particle.x,
+						particle.y,
+						particle.z
+					)
+
+					-- Add opacity information to each face
+					for _, f in ipairs(particle_sorted) do
+						f.opacity = opacity
+						add(all_particle_faces, f)
+					end
 				end
 			end
 		end
