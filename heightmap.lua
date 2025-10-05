@@ -139,6 +139,29 @@ function Heightmap.generate_terrain(cam_x, cam_z, grid_count, render_distance)
 			local v3 = (gz + 1) * (grid_count + 1) + gx + 2
 			local v4 = (gz + 1) * (grid_count + 1) + gx + 1
 
+			-- Determine sprite: use SPRITE_WATER (12) if flat and height is 0, otherwise SPRITE_GROUND (2)
+			-- Get heights of all 4 vertices to check if flat
+			local h1 = verts[v1].y
+			local h2 = verts[v2].y
+			local h3 = verts[v3].y
+			local h4 = verts[v4].y
+
+			-- Check if quad is flat (all vertices at same height)
+			local is_flat = (h1 == h2 and h2 == h3 and h3 == h4)
+
+			-- Get height value from heightmap at quad center
+			local world_x = center_x + gx * Heightmap.TILE_SIZE - half_size + Heightmap.TILE_SIZE / 2
+			local world_z = center_z + gz * Heightmap.TILE_SIZE - half_size + Heightmap.TILE_SIZE / 2
+			local tile_x, tile_z = Heightmap.world_to_tile(world_x, world_z)
+			local height_value = 0
+			if tile_x >= 0 and tile_x < Heightmap.MAP_SIZE and tile_z >= 0 and tile_z < Heightmap.MAP_SIZE then
+				local pixel_index = tile_z * Heightmap.MAP_SIZE + tile_x
+				height_value = heightmap_data[pixel_index]
+			end
+
+			-- Water only on flat surfaces at height 0, otherwise ground texture
+			local sprite_id = (is_flat and height_value == 0) and 12 or 2
+
 			-- UV coordinates with 4x4 tiling (64x64 pixels = 4 tiles of 16x16)
 			local uv_tl = vec(0, 0)
 			local uv_tr = vec(64, 0)
@@ -146,9 +169,9 @@ function Heightmap.generate_terrain(cam_x, cam_z, grid_count, render_distance)
 			local uv_bl = vec(0, 64)
 
 			-- First triangle (v1, v2, v3)
-			add(faces, {v1, v2, v3, 2, uv_tl, uv_tr, uv_br})
+			add(faces, {v1, v2, v3, sprite_id, uv_tl, uv_tr, uv_br})
 			-- Second triangle (v1, v3, v4)
-			add(faces, {v1, v3, v4, 2, uv_tl, uv_br, uv_bl})
+			add(faces, {v1, v3, v4, sprite_id, uv_tl, uv_br, uv_bl})
 		end
 	end
 

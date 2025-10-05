@@ -25,7 +25,8 @@ end
 -- @param building_configs: array of building configs
 -- @param landing_pad: landing pad object
 -- @param heightmap: heightmap module reference
-function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, heightmap)
+-- @param position_history: array of {x, z, t} position records
+function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, heightmap, position_history)
 	-- Border (black, 2 pixels thick)
 	rectfill(Minimap.X - 2, Minimap.Y - 2, Minimap.X + Minimap.SIZE + 2, Minimap.Y + Minimap.SIZE + 2, 0)
 
@@ -82,17 +83,33 @@ function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, he
 	-- Draw player dot (always visible, 1 pixel radius)
 	circfill(player_minimap_x, player_minimap_y, 1, 10)  -- Yellow dot
 
-	-- Draw direction arrow showing camera facing
-	local arrow_length = 6
-	local arrow_angle = camera.ry  -- Camera yaw rotation
+	-- Draw position trail (path traveled over last 5 seconds)
+	if position_history and #position_history > 1 then
+		-- Draw lines between consecutive positions
+		for i = 1, #position_history - 1 do
+			local pos1 = position_history[i]
+			local pos2 = position_history[i + 1]
 
-	-- Calculate arrow endpoint from ship position in opposite camera direction
-	local arrow_dx = sin(arrow_angle) * arrow_length
-	local arrow_dz = -cos(arrow_angle) * arrow_length
+			-- Convert world positions to minimap coordinates
+			local x1 = Minimap.X + Minimap.SIZE / 2 + pos1.x * pixels_per_world_unit
+			local y1 = Minimap.Y + Minimap.SIZE / 2 + pos1.z * pixels_per_world_unit
+			local x2 = Minimap.X + Minimap.SIZE / 2 + pos2.x * pixels_per_world_unit
+			local y2 = Minimap.Y + Minimap.SIZE / 2 + pos2.z * pixels_per_world_unit
 
-	-- Draw arrow line from ship dot pointing in camera direction
-	line(player_minimap_x, player_minimap_y,
-	     player_minimap_x + arrow_dx, player_minimap_y + arrow_dz, 10)
+			-- Alternate between colors 9 (orange) and 25 (yellow-green) for faded trail effect
+			local color = (i % 2 == 0) and 9 or 25
+			line(x1, y1, x2, y2, color)
+		end
+
+		-- Draw line from last history position to current position
+		if #position_history > 0 then
+			local last_pos = position_history[#position_history]
+			local last_x = Minimap.X + Minimap.SIZE / 2 + last_pos.x * pixels_per_world_unit
+			local last_y = Minimap.Y + Minimap.SIZE / 2 + last_pos.z * pixels_per_world_unit
+			local color = (#position_history % 2 == 0) and 9 or 25
+			line(last_x, last_y, player_minimap_x, player_minimap_y, color)
+		end
+	end
 end
 
 return Minimap

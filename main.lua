@@ -7,6 +7,21 @@ local Collision = include("collision.lua")
 local Heightmap = include("heightmap.lua")
 local Minimap = include("minimap.lua")
 
+-- Sprite Constants (for easy reference)
+local SPRITE_CUBE = 0
+local SPRITE_SPHERE = 1
+local SPRITE_GROUND = 2  -- Terrain texture
+local SPRITE_FLAME = 3
+local SPRITE_SMOKE = 5
+local SPRITE_TREES = 6
+local SPRITE_LANDING_PAD = 8
+local SPRITE_SHIP = 9
+local SPRITE_SHIP_DAMAGE = 10
+local SPRITE_SKYBOX = 11
+local SPRITE_WATER = 12
+local SPRITE_WATER2 = 13
+local SPRITE_HEIGHTMAP = 64  -- Heightmap data source (128x128)
+
 -- VTOL Physics Configuration (easy tweaking)
 local VTOL_THRUST = 0.002  -- Thrust force per thruster
 local VTOL_TORQUE_YAW = 0.001  -- Torque around Y axis (yaw)
@@ -26,13 +41,14 @@ local DAMAGE_BUILDING_MULTIPLIER = 50  -- Damage multiplier for building collisi
 local DAMAGE_GROUND_MULTIPLIER = 100   -- Damage multiplier for ground impacts
 
 -- Rendering Configuration
-local RENDER_DISTANCE = 15  -- Far plane / fog distance
+local RENDER_DISTANCE = 20  -- Far plane / fog distance
+local FOG_START_DISTANCE = 15  -- Distance where fog/fade begins (3m before render distance)
 local DEBUG_SHOW_PHYSICS_WIREFRAME = false  -- Toggle physics collision wireframes
 local GROUND_ALWAYS_BEHIND = false  -- Force ground to render behind everything (depth bias)
 
 -- Heightmap Configuration
-local USE_HEIGHTMAP = true  -- Enable heightmap terrain system (128x128 map, sprite 64)
-local DEBUG_SHOW_HEIGHTMAP_SPRITE = false  -- Draw sprite 64 on screen to verify it's correct
+local USE_HEIGHTMAP = true  -- Enable heightmap terrain system (128x128 map from sprite 64)
+local DEBUG_SHOW_HEIGHTMAP_SPRITE = false  -- Draw sprite 64 (heightmap data) on screen to verify it's correct
 
 -- Cached minimap terrain texture (generated once at startup)
 local minimap_terrain_cache = nil
@@ -113,7 +129,38 @@ local sphere_verts, sphere_faces_raw = generate_sphere(1)
 -- Convert sphere faces to include sprite_id and UVs
 local sphere_faces = {}
 for _, face in ipairs(sphere_faces_raw) do
-	add(sphere_faces, {face[1], face[2], face[3], 1, vec(0,0), vec(16,0), vec(16,16)})  -- sprite 1
+	add(sphere_faces, {face[1], face[2], face[3], SPRITE_SPHERE, vec(0,0), vec(16,0), vec(16,16)})  -- sphere sprite
+end
+
+-- Skybox: 6-sided dome with 1 vertical segment using sprite 11
+local skybox_radius = 50
+local skybox_height = 30
+local skybox_verts = {}
+
+-- Bottom ring (6 vertices at y=0)
+for i = 0, 5 do
+	local angle = i / 6
+	add(skybox_verts, vec(
+		cos(angle) * skybox_radius,
+		0,
+		sin(angle) * skybox_radius
+	))
+end
+
+-- Top vertex
+add(skybox_verts, vec(0, skybox_height, 0))  -- Vertex 7
+
+-- Skybox faces (6 triangular sides) - 32x32 sprite
+local skybox_faces = {}
+for i = 0, 5 do
+	local b1 = i + 1                  -- Bottom ring vertex
+	local b2 = (i + 1) % 6 + 1        -- Next bottom vertex
+	local top = 7                      -- Top vertex
+
+	-- Triangle from bottom edge to top (UVs tile horizontally across 32px)
+	local u_start = i * 32 / 6
+	local u_end = (i + 1) * 32 / 6
+	add(skybox_faces, {b1, b2, top, SPRITE_SKYBOX, vec(u_start, 32), vec(u_end, 32), vec((u_start+u_end)/2, 0)})
 end
 
 -- Ground plane generation now uses heightmap system
@@ -190,24 +237,24 @@ if not landing_pad_mesh or #landing_pad_mesh.verts == 0 then
 		},
 		faces = {
 			-- Bottom face
-			{1, 2, 3, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{1, 2, 3, SPRITE_LANDING_PAD, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, SPRITE_LANDING_PAD, vec(0,0), vec(16,16), vec(0,16)},
 			-- Top face
-			{5, 7, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{5, 7, 6, SPRITE_LANDING_PAD, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, SPRITE_LANDING_PAD, vec(0,0), vec(16,16), vec(0,16)},
 			-- Front face
-			{1, 5, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{1, 5, 6, SPRITE_LANDING_PAD, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, SPRITE_LANDING_PAD, vec(0,0), vec(16,16), vec(0,16)},
 			-- Back face
-			{3, 7, 8, 8, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{3, 7, 8, SPRITE_LANDING_PAD, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, SPRITE_LANDING_PAD, vec(0,0), vec(16,16), vec(0,16)},
 			-- Left face
-			{4, 8, 5, 8, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, 8, vec(0,0), vec(16,16), vec(0,16)},
+			{4, 8, 5, SPRITE_LANDING_PAD, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, SPRITE_LANDING_PAD, vec(0,0), vec(16,16), vec(0,16)},
 			-- Right face
-			{2, 6, 7, 8, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, 8, vec(0,0), vec(16,16), vec(0,16)}
+			{2, 6, 7, SPRITE_LANDING_PAD, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, SPRITE_LANDING_PAD, vec(0,0), vec(16,16), vec(0,16)}
 		}
 	}
 end
 
--- Override sprite to 8 for landing pad (32x32 pixels) and scale UVs to 32x32
+-- Override sprite to SPRITE_LANDING_PAD for landing pad (32x32 pixels) and scale UVs to 32x32
 for _, face in ipairs(landing_pad_mesh.faces) do
-	face[4] = 8  -- Set sprite index to 8
+	face[4] = SPRITE_LANDING_PAD  -- Set sprite index to landing pad texture
 	-- Scale UVs from 16x16 to 32x32 (multiply by 2)
 	if face[5] then face[5] = vec(face[5].x * 2, face[5].y * 2) end
 	if face[6] then face[6] = vec(face[6].x * 2, face[6].y * 2) end
@@ -238,7 +285,7 @@ local landing_pad = {
 	x = 5,  -- Moved 5 units to the right
 	y = 0.5,
 	z = -3,
-	sprite_override = 8,
+	sprite_override = SPRITE_LANDING_PAD,  -- Landing pad texture
 	-- Collision box: width/depth from mesh (scaled 50%), height fixed at 1.5m
 	width = pad_width * pad_scale,
 	height = 1.5,  -- Fixed at 1.5m for collision
@@ -256,19 +303,19 @@ if not tree_mesh or #tree_mesh.verts == 0 then
 			vec(-1.5, 3, -1.5), vec(1.5, 3, -1.5), vec(1.5, 3, 1.5), vec(-1.5, 3, 1.5)   -- Top
 		},
 		faces = {
-			{1, 2, 3, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{5, 7, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{1, 5, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{3, 7, 8, 8, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{4, 8, 5, 8, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{2, 6, 7, 8, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, 8, vec(0,0), vec(16,16), vec(0,16)}
+			{1, 2, 3, SPRITE_TREES, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, SPRITE_TREES, vec(0,0), vec(16,16), vec(0,16)},
+			{5, 7, 6, SPRITE_TREES, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, SPRITE_TREES, vec(0,0), vec(16,16), vec(0,16)},
+			{1, 5, 6, SPRITE_TREES, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, SPRITE_TREES, vec(0,0), vec(16,16), vec(0,16)},
+			{3, 7, 8, SPRITE_TREES, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, SPRITE_TREES, vec(0,0), vec(16,16), vec(0,16)},
+			{4, 8, 5, SPRITE_TREES, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, SPRITE_TREES, vec(0,0), vec(16,16), vec(0,16)},
+			{2, 6, 7, SPRITE_TREES, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, SPRITE_TREES, vec(0,0), vec(16,16), vec(0,16)}
 		}
 	}
 end
 
--- Override sprite to 6 for all tree faces
+-- Override sprite to SPRITE_TREES for all tree faces
 for _, face in ipairs(tree_mesh.faces) do
-	face[4] = 6  -- Set sprite index to 6
+	face[4] = SPRITE_TREES  -- Set sprite index to trees
 end
 
 -- Generate random tree positions (max 3 per 20m x 20m cell)
@@ -305,15 +352,18 @@ for tree_idx = 1, 150 do  -- Try to place up to 150 trees
 			tree_height = Heightmap.get_height(x, z)
 		end
 
-		add(trees, {
-			verts = tree_mesh.verts,
-			faces = tree_mesh.faces,
-			x = x,
-			y = tree_height,  -- Terrain elevation
-			z = z,
-			sprite_override = 6
-		})
-		tree_grid[cell_key] += 1
+		-- Don't place trees on water (height = 0)
+		if tree_height > 0 then
+			add(trees, {
+				verts = tree_mesh.verts,
+				faces = tree_mesh.faces,
+				x = x,
+				y = tree_height,  -- Terrain elevation
+				z = z,
+				sprite_override = 6
+			})
+			tree_grid[cell_key] += 1
+		end
 	end
 end
 
@@ -360,17 +410,25 @@ local vert_data_pool = userdata("f64", 6, 3)
 -- Explosion effects (visual only)
 local explosions = {}
 
-local function add_explosion(x, y, z)
-	-- Spawn explosion randomly within 3 unit radius of impact point
-	local angle = rnd(1)  -- Random angle 0-1
-	local distance = rnd(3)  -- Random distance 0-3 units
-	local offset_x = cos(angle) * distance
-	local offset_z = sin(angle) * distance
+local function add_explosion(vtol_obj)
+	-- Pick a random engine position for the explosion
+	local random_thruster = vtol_obj.thrusters[flr(rnd(#vtol_obj.thrusters)) + 1]
+
+	-- Calculate world position of the engine using ship rotation
+	local cos_yaw = cos(vtol_obj.yaw)
+	local sin_yaw = sin(vtol_obj.yaw)
+	local cos_pitch = cos(vtol_obj.pitch)
+	local sin_pitch = sin(vtol_obj.pitch)
+
+	-- Rotate engine position by ship's yaw (simplified - just yaw rotation for now)
+	local world_x = vtol_obj.x --+ (random_thruster.x * cos_yaw - random_thruster.z * sin_yaw)
+	local world_y = vtol_obj.y --+ (random_thruster.y or -0.3)  -- Use thruster y or default
+	local world_z = vtol_obj.z --+ (random_thruster.x * sin_yaw + random_thruster.z * cos_yaw)
 
 	add(explosions, {
-		x = x + offset_x,
-		y = y,
-		z = z + offset_z,
+		x = world_x,
+		y = world_y,
+		z = world_z,
 		time = 0,
 		max_time = 0.6,  -- Duration in seconds
 		max_radius = 8   -- Larger radius for visibility
@@ -403,6 +461,12 @@ local vtol = {
 	angular_damping = VTOL_ANGULAR_DAMPING,
 }
 
+-- Position history for minimap trail (store last 5 seconds)
+local position_history = {}
+local HISTORY_DURATION = 5  -- seconds
+local HISTORY_SAMPLE_RATE = 0.1  -- sample every 0.1 seconds
+local last_history_sample = 0
+
 -- Load cross_lander mesh from OBJ
 local cross_lander_mesh = load_obj("cross_lander.obj")
 local flame_mesh = load_obj("flame.obj")
@@ -433,12 +497,12 @@ if not flame_mesh or #flame_mesh.verts == 0 then
 			vec(-0.5, 1, -0.5), vec(0.5, 1, -0.5), vec(0.5, 1, 0.5), vec(-0.5, 1, 0.5)
 		},
 		faces = {
-			{1, 2, 3, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{5, 7, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{1, 5, 6, 8, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{3, 7, 8, 8, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{4, 8, 5, 8, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, 8, vec(0,0), vec(16,16), vec(0,16)},
-			{2, 6, 7, 8, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, 8, vec(0,0), vec(16,16), vec(0,16)}
+			{1, 2, 3, SPRITE_FLAME, vec(0,0), vec(16,0), vec(16,16)}, {1, 3, 4, SPRITE_FLAME, vec(0,0), vec(16,16), vec(0,16)},
+			{5, 7, 6, SPRITE_FLAME, vec(0,0), vec(16,0), vec(16,16)}, {5, 8, 7, SPRITE_FLAME, vec(0,0), vec(16,16), vec(0,16)},
+			{1, 5, 6, SPRITE_FLAME, vec(0,0), vec(16,0), vec(16,16)}, {1, 6, 2, SPRITE_FLAME, vec(0,0), vec(16,16), vec(0,16)},
+			{3, 7, 8, SPRITE_FLAME, vec(0,0), vec(16,0), vec(16,16)}, {3, 8, 4, SPRITE_FLAME, vec(0,0), vec(16,16), vec(0,16)},
+			{4, 8, 5, SPRITE_FLAME, vec(0,0), vec(16,0), vec(16,16)}, {4, 5, 1, SPRITE_FLAME, vec(0,0), vec(16,16), vec(0,16)},
+			{2, 6, 7, SPRITE_FLAME, vec(0,0), vec(16,0), vec(16,16)}, {2, 7, 3, SPRITE_FLAME, vec(0,0), vec(16,16), vec(0,16)}
 		}
 	}
 end
@@ -507,7 +571,7 @@ for i, engine in ipairs(engine_positions) do
 			face[1] + flame_verts_start,
 			face[2] + flame_verts_start,
 			face[3] + flame_verts_start,
-			3,  -- Use sprite 3 for flames
+			SPRITE_FLAME,  -- Use flame sprite
 			face[5], face[6], face[7]
 		})
 	end
@@ -526,11 +590,60 @@ local smoke_system = ParticleSystem.new({
 	max_particles = 10,  -- Increased from 4 to 10 for damage severity
 	lifetime = 2.0,
 	spawn_rate = 0.3,
-	sprite_id = 5,  -- Grey smoke sprite
+	sprite_id = SPRITE_SMOKE,  -- Grey smoke sprite
 	scale_growth = 1.5
 })
 local smoke_spawn_timer = 0
 local smoke_spawn_rate = 0.3  -- Base spawn rate (can be modified based on damage)
+
+-- Speed lines particle system (dust/motion lines)
+local speed_lines = {}
+local MAX_SPEED_LINES = 40  -- Maximum number of speed lines
+local SPEED_LINE_SPAWN_RATE = 0.05  -- Spawn interval
+local speed_line_timer = 0
+
+local function spawn_speed_line(ship)
+	-- Calculate ship speed
+	local speed = sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz)
+
+	if speed < 0.02 then return end  -- Don't spawn at very low speeds
+
+	-- Spawn line randomly around the ship in a sphere (40m radius = 4 world units)
+	local spawn_radius = 4  -- 40 meters radius (4x larger)
+
+	-- Random position in a sphere around ship (using spherical coordinates for even distribution)
+	local theta = rnd(1)  -- Angle around Y axis (0-1)
+	local phi = rnd(1)  -- Angle from Y axis (0-1)
+	local radius = rnd(spawn_radius)
+
+	-- Convert to Cartesian coordinates for even sphere distribution
+	local offset_x = radius * sin(phi) * cos(theta)
+	local offset_y = radius * sin(phi) * sin(theta)
+	local offset_z = radius * cos(phi)
+
+	-- All lines point in the same direction: ship's velocity
+	-- Normalize ship velocity to get direction
+	local vel_mag = sqrt(ship.vx * ship.vx + ship.vy * ship.vy + ship.vz * ship.vz)
+	local dir_x = ship.vx / vel_mag
+	local dir_y = ship.vy / vel_mag
+	local dir_z = ship.vz / vel_mag
+
+	-- Calculate line length at spawn (based on current velocity, minimum 1 pixel equivalent)
+	local line_length = max(0.1, vel_mag * 2)
+
+	add(speed_lines, {
+		x = ship.x + offset_x,
+		y = ship.y + offset_y,
+		z = ship.z + offset_z,
+		-- Store direction and length at spawn time (won't change)
+		dir_x = dir_x,
+		dir_y = dir_y,
+		dir_z = dir_z,
+		length = line_length,  -- Fixed length
+		life = 1.0,  -- Lifetime in seconds
+		max_life = 1.0
+	})
+end
 
 -- Function to reset game to initial state
 local function reset_game()
@@ -562,6 +675,14 @@ local function reset_game()
 		particle.active = false
 		particle.life = 0
 	end
+
+	-- Clear speed lines
+	speed_lines = {}
+	speed_line_timer = 0
+
+	-- Clear position history
+	position_history = {}
+	last_history_sample = 0
 
 	-- Reset game state
 	current_game_state = GAME_STATE.PLAYING
@@ -663,7 +784,8 @@ local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_ov
 		sprite_override, is_ground,
 		rot_pitch, rot_yaw, rot_roll,
 		RENDER_DISTANCE,
-		GROUND_ALWAYS_BEHIND
+		GROUND_ALWAYS_BEHIND,
+		FOG_START_DISTANCE
 	)
 end
 
@@ -878,6 +1000,17 @@ function _update()
 	vtol.y += vtol.vy
 	vtol.z += vtol.vz
 
+	-- Track position history for minimap trail
+	if current_time - last_history_sample >= HISTORY_SAMPLE_RATE then
+		add(position_history, {x = vtol.x, z = vtol.z, t = current_time})
+		last_history_sample = current_time
+
+		-- Remove old entries (older than 5 seconds)
+		while #position_history > 0 and current_time - position_history[1].t > HISTORY_DURATION do
+			deli(position_history, 1)
+		end
+	end
+
 	-- Auto-level with shift key
 	if shift_pressed then
 		-- Smoothly reset rotation to level (zero pitch and roll)
@@ -957,8 +1090,8 @@ function _update()
 						local damage = collision_speed * DAMAGE_BUILDING_MULTIPLIER
 						vtol.health -= damage
 
-						-- Spawn explosion effect at collision point
-						add_explosion(vtol.x, vtol.y, vtol.z)
+						-- Spawn explosion effect at random engine
+						add_explosion(vtol)
 
 						-- Start smoking if health is low
 						if vtol.health < 50 then
@@ -997,8 +1130,8 @@ function _update()
 				local damage = collision_speed * DAMAGE_BUILDING_MULTIPLIER
 				vtol.health -= damage
 
-				-- Spawn explosion effect at collision point
-				add_explosion(vtol.x, vtol.y, vtol.z)
+				-- Spawn explosion effect at random engine
+				add_explosion(vtol)
 
 				-- Start smoking if health is low
 				if vtol.health < 50 then
@@ -1029,8 +1162,8 @@ function _update()
 			local damage = abs(vtol.vy) * DAMAGE_GROUND_MULTIPLIER
 			vtol.health -= damage
 
-			-- Spawn explosion effect at impact point
-			add_explosion(vtol.x, vtol.y, vtol.z)
+			-- Spawn explosion effect at random engine
+			add_explosion(vtol)
 
 			-- Start smoking if health is low
 			if vtol.health < 50 then
@@ -1085,6 +1218,36 @@ function _update()
 	-- Update smoke particle system
 	smoke_system:update(delta_time)
 
+	-- Update and spawn speed lines
+	local ship_speed = sqrt(vtol.vx * vtol.vx + vtol.vy * vtol.vy + vtol.vz * vtol.vz)
+
+	-- Spawn rate based on speed (more lines at higher speeds)
+	local spawn_rate = SPEED_LINE_SPAWN_RATE
+	if ship_speed > 0.1 then
+		spawn_rate = SPEED_LINE_SPAWN_RATE / (1 + ship_speed * 5)  -- Faster spawning at high speed
+	end
+
+	speed_line_timer += delta_time
+	if speed_line_timer >= spawn_rate and #speed_lines < MAX_SPEED_LINES then
+		-- Spawn multiple lines at high speeds
+		local num_to_spawn = flr(ship_speed * 10) + 1
+		num_to_spawn = min(num_to_spawn, 3)  -- Cap at 3 per frame
+		for i = 1, num_to_spawn do
+			spawn_speed_line(vtol)
+		end
+		speed_line_timer = 0
+	end
+
+	-- Update speed lines (they don't move, just fade out)
+	for i = #speed_lines, 1, -1 do
+		local speed_line = speed_lines[i]
+		speed_line.life -= delta_time
+
+		if speed_line.life <= 0 then
+			deli(speed_lines, i)
+		end
+	end
+
 	-- Camera follows VTOL with smooth lerp (doesn't drift too far)
 	-- local camera_offset = 5  -- Distance behind VTOL
 	local camera_lerp_speed = 0.1  -- How fast camera catches up
@@ -1102,7 +1265,7 @@ function _update()
 end
 
 function _draw()
-	cls(0)
+	cls(5)  -- Background color index 6
 
 	-- Update FPS counter (count rendered frames)
   	current_fps = stat(7)
@@ -1144,8 +1307,28 @@ function _draw()
 	-- Collect all faces from all meshes
 	local all_faces = {}
 
+	-- Render skybox (always at camera position, draws behind everything)
+	local skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, nil, true)  -- true = no distance culling
+	for _, f in ipairs(skybox_sorted) do
+		f.depth = 999999  -- Push skybox to back (always draws behind)
+		f.is_skybox = true  -- Mark as skybox to exclude from fog
+		add(all_faces, f)
+	end
+
 	-- Generate and render ground plane dynamically around camera
 	local ground_verts, ground_faces = generate_ground_around_camera(camera.x, camera.z)
+
+	-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 1 second
+	local water_frame = flr(time()) % 2  -- 0 or 1, changes every second
+	local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
+
+	-- Update water sprite on all water faces
+	for _, face in ipairs(ground_faces) do
+		if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
+			face[4] = water_sprite
+		end
+	end
+
 	local ground_sorted = render_mesh(ground_verts, ground_faces, 0, 0, 0, nil, true)
 	for _, f in ipairs(ground_sorted) do
 		add(all_faces, f)
@@ -1232,8 +1415,8 @@ function _draw()
 		if should_show then
 			-- Create face copy with damage sprite if needed
 			local face_copy = {face[1], face[2], face[3], face[4], face[5], face[6], face[7]}
-			if use_damage_sprite and face[4] == 9 then
-				face_copy[4] = 10  -- Switch to damage sprite
+			if use_damage_sprite and face[4] == SPRITE_SHIP then
+				face_copy[4] = SPRITE_SHIP_DAMAGE  -- Switch to damage sprite
 			end
 			add(vtol_faces_filtered, face_copy)
 		end
@@ -1443,7 +1626,7 @@ function _draw()
 	end
 
 	-- Draw minimap using Minimap module
-	Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, Heightmap)
+	Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, Heightmap, position_history)
 
 	-- Draw 3D compass (cross/diamond shape with red and grey arrows)
 	-- Side view: <> (diamond), Front view: X (cross)
@@ -1570,6 +1753,73 @@ function _draw()
 						local color = dither == 0 and 8 or 9  -- Red/Orange dither
 						circ(sx, sy, i, color)
 					end
+				end
+			end
+		end
+	end
+
+	-- Draw speed lines (3D line particles)
+	for speed_line in all(speed_lines) do
+		-- Transform line position to camera space
+		local lx = speed_line.x - camera.x
+		local ly = speed_line.y - camera.y
+		local lz = speed_line.z - camera.z
+
+		-- Apply camera rotation
+		local cos_ry, sin_ry = cos(camera.ry), sin(camera.ry)
+		local cos_rx, sin_rx = cos(camera.rx), sin(camera.rx)
+
+		local lx2 = lx * cos_ry - lz * sin_ry
+		local lz2 = lx * sin_ry + lz * cos_ry
+
+		local ly2 = ly * cos_rx - lz2 * sin_rx
+		local lz3 = ly * sin_rx + lz2 * cos_rx
+
+		-- Move away from camera
+		lz3 += 5
+
+		-- Color based on starting point depth: 5 (darkest/far), 22 (mid), 6 (lightest/near)
+		local color = 5  -- Default dark
+		if lz3 < 8 then
+			color = 6  -- Lightest (closest)
+		elseif lz3 < 15 then
+			color = 22  -- Mid-tone
+		end
+
+		-- Project to screen
+		if lz3 > 0.01 then
+			local fov = 70
+			local fov_rad = fov * 0.5 * 0.0174533
+			local tan_half_fov = sin(fov_rad) / cos(fov_rad)
+
+			local sx1 = lx2 / lz3 * (270 / tan_half_fov) + 240
+			local sy1 = ly2 / lz3 * (270 / tan_half_fov) + 135
+
+			-- Calculate line end point using stored fixed length and direction
+			local end_x = speed_line.x + speed_line.dir_x * speed_line.length
+			local end_y = speed_line.y + speed_line.dir_y * speed_line.length
+			local end_z = speed_line.z + speed_line.dir_z * speed_line.length
+
+			-- Transform end point
+			local ex = end_x - camera.x
+			local ey = end_y - camera.y
+			local ez = end_z - camera.z
+
+			local ex2 = ex * cos_ry - ez * sin_ry
+			local ez2 = ex * sin_ry + ez * cos_ry
+
+			local ey2 = ey * cos_rx - ez2 * sin_rx
+			local ez3 = ey * sin_rx + ez2 * cos_rx
+			ez3 += 5
+
+			if ez3 > 0.01 then
+				local sx2 = ex2 / ez3 * (270 / tan_half_fov) + 240
+				local sy2 = ey2 / ez3 * (270 / tan_half_fov) + 135
+
+				-- Draw line with fade based on lifetime
+				local alpha = speed_line.life / speed_line.max_life
+				if alpha > 0.3 then  -- Only draw if visible enough
+					line(sx1, sy1, sx2, sy2, color)
 				end
 			end
 		end

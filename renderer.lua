@@ -89,7 +89,7 @@ end
 -- @param render_distance: far clipping plane distance
 -- @param ground_always_behind: apply depth bias to ground (optional, default true)
 -- @return sorted_faces: array of faces ready to draw
-function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, ground_always_behind)
+function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, ground_always_behind, fog_start_distance)
 	-- Projection parameters
 	local fov = 70  -- Field of view
 	local near = 0.01  -- Near clipping plane
@@ -106,6 +106,7 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 	local dx = obj_x - camera.x
 	local dz = obj_z - camera.z
 	local dist_sq = dx*dx + dz*dz  -- Only X and Z distance, ignore Y
+	local obj_dist = sqrt(dist_sq)  -- Store distance for fog calculation
 
 	-- Cull objects beyond render range (unless it's ground)
 	if not is_ground and dist_sq > far * far then
@@ -223,7 +224,8 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 			local dot = nx * view_x + ny * view_y + nz * view_z
 
 			-- Only render if facing camera (dot product > 0 means facing camera)
-			if dot > 0 then
+			-- Skip backface culling for ground/skybox (is_ground flag)
+			if dot > 0 or is_ground then
 				-- Screen space backface culling as backup
 				local edge1_x, edge1_y = p2.x - p1.x, p2.y - p1.y
 				local edge2_x, edge2_y = p3.x - p1.x, p3.y - p1.y
@@ -237,9 +239,23 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 					if is_ground and (ground_always_behind == nil or ground_always_behind) then
 						avg_depth += 1000  -- Push ground far back in sort order
 					end
+
+					-- Calculate fog opacity based on distance (0 = opaque, 1 = fully fogged)
+					-- Using exponential falloff for smoother fade
+					local fog_opacity = 0
+					if fog_start_distance then
+						-- For terrain/ground, use per-vertex depth instead of mesh distance
+						local face_dist = is_ground and avg_depth or obj_dist
+						if face_dist > fog_start_distance then
+							local linear_fog = (face_dist - fog_start_distance) / (far - fog_start_distance)
+							fog_opacity = linear_fog * linear_fog  -- Exponential (square for smoother falloff)
+							fog_opacity = mid(0, fog_opacity, 1)  -- Clamp 0-1
+						end
+					end
+
 					-- Create a copy of face with sprite override if provided
 					local face_copy = {face[1], face[2], face[3], sprite_override or face[4], face[5], face[6], face[7]}
-					add(sorted_faces, {face=face_copy, depth=avg_depth, p1=p1, p2=p2, p3=p3})
+					add(sorted_faces, {face=face_copy, depth=avg_depth, p1=p1, p2=p2, p3=p3, fog=fog_opacity})
 				end
 			end
 		end
@@ -296,6 +312,30 @@ function Renderer.draw_faces(all_faces, ship_flash_red)
 			end
 		else
 			fillp()  -- Reset to solid
+		end
+
+		-- Apply linear fog dithering based on distance (applies to all sprites except skybox)
+		-- fog_level: 0 = no fog (opaque), 1 = full fog (transparent)
+		local fog_level = f.fog or 0
+		if fog_level > 0 and not f.is_skybox then
+			-- Higher fog_level = less visible (patterns FLIPPED - more 1s = MORE transparent!)
+			if fog_level > 0.875 then
+				fillp(0b0111111101111111)  -- Most 1s = most transparent (almost invisible)
+			elseif fog_level > 0.75 then
+				fillp(0b0111101101111011)  --
+			elseif fog_level > 0.625 then
+				fillp(0b0101101101011011)  --
+			elseif fog_level > 0.5 then
+				fillp(0b0101101001011010)  -- 50%
+			elseif fog_level > 0.375 then
+				fillp(0b1010010010100100)  --
+			elseif fog_level > 0.25 then
+				fillp(0b1000010010000100)  --
+			elseif fog_level > 0.125 then
+				fillp(0b1000010000100001)  --
+			else
+				fillp(0b1000000010000000)  -- Fewest 1s = least transparent (barely fogged)
+			end
 		end
 
 		Renderer.textri({tex = render_sprite}, vert_data_pool, 270)
