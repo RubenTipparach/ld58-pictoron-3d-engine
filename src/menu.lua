@@ -40,9 +40,15 @@ local Menu = {}
 
 -- Menu state
 Menu.active = true
+Menu.show_options = false  -- Start with only title screen
+Menu.show_mode_select = false  -- Mode selection screen (Arcade/Simulation)
 Menu.selected_option = 1
+Menu.selected_mode = 1  -- 1 = Arcade, 2 = Simulation
+Menu.pending_mission = nil  -- Mission selected, waiting for mode choice
 Menu.options = {}
 Menu.mission_progress = {}  -- Which missions are unlocked
+Menu.mission_testing = false  -- If true, all missions are unlocked (set from main.lua)
+Menu.splash_fade = 0  -- Fade timer for splash screen (0 = not fading, >0 = fading out)
 
 -- Space background elements
 Menu.planet = {}
@@ -51,6 +57,13 @@ Menu.space_lines = {}
 Menu.ship_mesh = {}
 Menu.flame_mesh = {}  -- Cached flame mesh for thrusters
 Menu.flame_base_verts = {}  -- Base positions for flame animation
+
+-- Helper function for text with drop shadow
+local function print_shadow(text, x, y, color, shadow_color)
+	shadow_color = shadow_color or 0  -- Default shadow color is black
+	print(text, x + 1, y + 1, shadow_color)  -- Shadow
+	print(text, x, y, color)  -- Main text
+end
 
 -- Generate 8-sided sphere with 6 height segments (latitude rings)
 -- Returns vertices and faces for UV-wrapped sphere
@@ -165,21 +178,43 @@ end
 -- Initialize menu
 function Menu.init()
 	Menu.active = true
+	Menu.show_options = false  -- Reset to title screen
+	Menu.show_mode_select = false  -- Reset mode selection
 	Menu.selected_option = 1
+	Menu.selected_mode = 1  -- Default to Arcade
+	Menu.pending_mission = nil  -- Clear pending mission
 
 	-- Load mission progress from storage (or create default)
-	Menu.mission_progress = {
-		mission_1 = true,  -- Mission 1 unlocked by default
-		mission_2 = true,  -- Mission 2 unlocked by default
-		mission_3 = false
-	}
+	if Menu.mission_testing then
+		-- Testing mode: unlock all missions
+		Menu.mission_progress = {
+			mission_1 = true,
+			mission_2 = true,
+			mission_3 = true,
+			mission_4 = true,
+			mission_5 = true,
+			mission_6 = true
+		}
+	else
+		Menu.mission_progress = {
+			mission_1 = true,  -- Mission 1 always unlocked
+			mission_2 = false,  -- Unlocks after Mission 1
+			mission_3 = false,  -- Unlocks after Mission 2
+			mission_4 = false,  -- Unlocks after Mission 3
+			mission_5 = false,  -- Unlocks after Mission 4
+			mission_6 = false   -- Unlocks after Mission 5
+		}
 
-	-- Try to load from Picotron storage using fetch()
-	local loaded_progress = fetch("/appdata/mission_progress.pod")
-	if loaded_progress then
-		Menu.mission_progress.mission_1 = loaded_progress.mission_1 or true  -- Mission 1 always unlocked
-		Menu.mission_progress.mission_2 = loaded_progress.mission_2 or true  -- Mission 2 unlocked by default
-		Menu.mission_progress.mission_3 = loaded_progress.mission_3 or false
+		-- Try to load from Picotron storage using fetch()
+		local loaded_progress = fetch("/appdata/mission_progress.pod")
+		if loaded_progress then
+			Menu.mission_progress.mission_1 = loaded_progress.mission_1 or true  -- Mission 1 always unlocked
+			Menu.mission_progress.mission_2 = loaded_progress.mission_2 or false
+			Menu.mission_progress.mission_3 = loaded_progress.mission_3 or false
+			Menu.mission_progress.mission_4 = loaded_progress.mission_4 or false
+			Menu.mission_progress.mission_5 = loaded_progress.mission_5 or false
+			Menu.mission_progress.mission_6 = loaded_progress.mission_6 or false
+		end
 	end
 
 	-- Build menu options based on unlocked missions
@@ -306,9 +341,30 @@ function Menu.update_options()
 
 	-- Mission 3
 	if Menu.mission_progress.mission_3 then
-		add(Menu.options, {text = "MISSION 3: [LOCKED]", mission = 3, locked = false})
+		add(Menu.options, {text = "MISSION 3: SCIENTIFIC MISSION", mission = 3, locked = false})
 	else
 		add(Menu.options, {text = "MISSION 3: [LOCKED]", mission = 3, locked = true})
+	end
+
+	-- Mission 4
+	if Menu.mission_progress.mission_4 then
+		add(Menu.options, {text = "MISSION 4: OCEAN RESCUE", mission = 4, locked = false})
+	else
+		add(Menu.options, {text = "MISSION 4: [LOCKED]", mission = 4, locked = true})
+	end
+
+	-- Mission 5
+	if Menu.mission_progress.mission_5 then
+		add(Menu.options, {text = "MISSION 5: SECRET WEAPON", mission = 5, locked = false})
+	else
+		add(Menu.options, {text = "MISSION 5: [LOCKED]", mission = 5, locked = true})
+	end
+
+	-- Mission 6
+	if Menu.mission_progress.mission_6 then
+		add(Menu.options, {text = "MISSION 6: ALIEN INVASION", mission = 6, locked = false})
+	else
+		add(Menu.options, {text = "MISSION 6: [LOCKED]", mission = 6, locked = true})
 	end
 
 	add(Menu.options, {text = "RESET PROGRESS", action = "reset", locked = false})
@@ -358,7 +414,33 @@ function Menu.update(delta_time)
 		end
 	end
 
-	-- Menu navigation
+	-- If options not shown yet, wait for Z press to show them
+	if not Menu.show_options and not Menu.show_mode_select then
+		if btnp(4) or btnp(5) or key("return") or key("space") then  -- Z, X, Enter, Space
+			Menu.show_options = true
+		end
+		return
+	end
+
+	-- Mode selection screen
+	if Menu.show_mode_select then
+		if btnp(2) or btnp(3) then  -- Up or Down
+			Menu.selected_mode = (Menu.selected_mode == 1) and 2 or 1
+		end
+
+		if btnp(4) or btnp(5) or key("return") or key("space") then  -- Z, X, Enter, Space
+			return Menu.select_mode()
+		end
+
+		if key("tab") then  -- TAB to go back
+			Menu.show_mode_select = false
+			Menu.show_options = true
+			Menu.pending_mission = nil
+		end
+		return
+	end
+
+	-- Menu navigation (only when options are visible)
 	if btnp(2) then  -- Up
 		Menu.selected_option -= 1
 		if Menu.selected_option < 1 then
@@ -402,10 +484,11 @@ function Menu.select_option()
 	end
 
 	if option.mission then
-		-- Start mission
-		Menu.active = false
-		Menu.selected_mission = option.mission
-		return "start_mission", option.mission
+		-- Show mode selection screen
+		Menu.pending_mission = option.mission
+		Menu.show_mode_select = true
+		Menu.show_options = false
+		Menu.selected_mode = 1  -- Default to Arcade
 	elseif option.action == "reset" then
 		-- Reset progress
 		Menu.reset_progress()
@@ -418,12 +501,22 @@ function Menu.select_option()
 	return nil
 end
 
+-- Select game mode (Arcade or Simulation)
+function Menu.select_mode()
+	Menu.active = false
+	Menu.selected_mission = Menu.pending_mission
+	local mode = (Menu.selected_mode == 1) and "arcade" or "simulation"
+	return "start_mission", Menu.pending_mission, mode
+end
+
 -- Reset mission progress
 function Menu.reset_progress()
 	Menu.mission_progress = {
 		mission_1 = true,
 		mission_2 = false,
-		mission_3 = false
+		mission_3 = false,
+		mission_4 = false,
+		mission_5 = false
 	}
 	Menu.save_progress()
 end
@@ -440,6 +533,10 @@ function Menu.unlock_mission(mission_num)
 		Menu.mission_progress.mission_2 = true
 	elseif mission_num == 3 then
 		Menu.mission_progress.mission_3 = true
+	elseif mission_num == 4 then
+		Menu.mission_progress.mission_4 = true
+	elseif mission_num == 5 then
+		Menu.mission_progress.mission_5 = true
 	end
 	Menu.save_progress()
 	Menu.update_options()
@@ -602,50 +699,120 @@ function Menu.draw(camera, render_mesh_func)
 	Renderer.sort_faces(all_faces)
 	Renderer.draw_faces(all_faces, false)
 
-	-- Draw menu UI with background box
-	local menu_y = 50
-	local menu_x = 160
+	-- Mode selection screen
+	if Menu.show_mode_select then
+		local menu_y = 60
+		local menu_x = 240
 
-	-- Calculate box dimensions
-	local box_padding = 10
-	local title_width = #"LANDER 2: THE RETURN" * 4
-	local max_option_width = 0
-	for i, option in ipairs(Menu.options) do
-		local option_width = #(">  " .. option.text) * 4
-		if option_width > max_option_width then
-			max_option_width = option_width
+		-- Mode options
+		local modes = {
+			{name = "ARCADE", desc = "Assisted flight with auto-balance\nand multi-thruster controls"},
+			{name = "SIMULATION", desc = "Manual flight with one button\nper thruster - no assists"}
+		}
+
+		-- Draw title with drop shadow
+		local title = "SELECT MODE"
+		local title_width = #title * 4
+		print_shadow(title, menu_x - title_width / 2, menu_y, 7)
+		menu_y += 20
+
+		-- Draw mode options
+		for i, mode in ipairs(modes) do
+			local color = (i == Menu.selected_mode) and 11 or 6
+			local prefix = (i == Menu.selected_mode) and "> " or "  "
+
+			-- Mode name with drop shadow
+			print_shadow(prefix .. mode.name, 80, menu_y, color)
+			menu_y += 12
+
+			-- Mode description (only for selected) with drop shadow
+			if i == Menu.selected_mode then
+				local desc_lines = {}
+				for line in mode.desc:gmatch("[^\n]+") do
+					add(desc_lines, line)
+				end
+				for _, line in ipairs(desc_lines) do
+					print_shadow("  " .. line, 80, menu_y, 6)
+					menu_y += 8
+				end
+				menu_y += 8
+			end
 		end
-	end
-	local box_width = (title_width > max_option_width and title_width or max_option_width) + box_padding * 2 + 40
-	local box_height = 20 + #Menu.options * 12 + box_padding * 2
-	local box_x = menu_x - box_width / 2
-	local box_y = menu_y - box_padding
 
-	-- Draw dithered background with transparency (color index 1 with dither pattern)
-	-- fillp(pattern, transparency_pattern) - where 0 bits in transparency are transparent
-	fillp(0b0101101001011010, 0b0101101001011010)
-	rectfill(box_x, box_y, box_x + box_width, box_y + box_height, 1)
-	fillp()
+		-- Controls hint with drop shadow - just show tab for going back!
+		print_shadow("[TAB] Back", 60, 220, 6)
 
-	-- Draw border (color 6)
-	rect(box_x, box_y, box_x + box_width, box_y + box_height, 6)
 
-	-- Draw title
-	print("LANDER 2: THE RETURN", 80, menu_y, 7)
-	menu_y += 20
+	elseif Menu.show_options then
+		-- Draw menu UI with background box
+		local menu_y = 50
+		local menu_x = 160
 
-	-- Draw options
-	for i, option in ipairs(Menu.options) do
-		local color
-		if option.locked then
-			color = 5  -- Grey for locked options
-		elseif i == Menu.selected_option then
-			color = 11  -- Cyan for selected
-		else
-			color = 6  -- Dark grey for unselected
+		-- Calculate box dimensions
+		local box_padding = 10
+
+		local title_width = #"The Return of Tom Lander" * 4
+		local max_option_width = 0
+		for i, option in ipairs(Menu.options) do
+			local option_width = #(">  " .. option.text) * 4
+			if option_width > max_option_width then
+				max_option_width = option_width
+			end
 		end
-		local prefix = (i == Menu.selected_option) and "> " or "  "
-		print(prefix .. option.text, 80, menu_y + (i - 1) * 12, color)
+		local box_width = (title_width > max_option_width and title_width or max_option_width) + box_padding * 2 + 40
+		local box_height = 20 + #Menu.options * 12 + box_padding * 2
+		local box_x = menu_x - box_width / 2
+		local box_y = menu_y - box_padding
+
+		-- Draw dithered background with transparency (color index 1 with dither pattern)
+		-- fillp(pattern, transparency_pattern) - where 0 bits in transparency are transparent
+		fillp(0b0101101001011010, 0b0101101001011010)
+		rectfill(box_x, box_y, box_x + box_width, box_y + box_height, 1)
+		fillp()
+
+		-- Draw border (color 6)
+		rect(box_x, box_y, box_x + box_width, box_y + box_height, 6)
+
+		-- Draw title
+		print("The Return of Tom Lander", 80, menu_y, 7)
+		menu_y += 20
+
+		-- Draw options
+		for i, option in ipairs(Menu.options) do
+			local color
+			if option.locked then
+				color = 5  -- Grey for locked options
+			elseif i == Menu.selected_option then
+				color = 11  -- Cyan for selected
+			else
+				color = 6  -- Dark grey for unselected
+			end
+			local prefix = (i == Menu.selected_option) and "> " or "  "
+			print(prefix .. option.text, 80, menu_y + (i - 1) * 12, color)
+		end
+
+	else
+		-- Draw sprite 66 (title logo) in center of screen (256x128 scaled 1.5x = 384x192)
+		local sprite_w = 256 * 1.5
+		local sprite_h = 128 * 1.5
+		local sprite_x = 240 - sprite_w / 2
+		local sprite_y = 135 - sprite_h / 2
+
+		-- Draw sprite with transparency
+		poke(0x550F, 0)  -- Set color 0 (black) as transparent
+		-- sspr(sprite_id, src_x, src_y, src_w, src_h, dest_x, dest_y, dest_w, dest_h)
+		sspr(65, 0, 0, 256, 128, sprite_x, sprite_y, sprite_w, sprite_h)
+		poke(0x550F, 0xFF)  -- Reset transparency
+
+		-- Draw "press Z to start" hint below sprite with drop shadow
+		local hint = "[Z] to start"
+		local hint_width = #hint * 4
+		local hint_x = 240 - hint_width / 2
+		local hint_y = sprite_y + sprite_h + 10
+		-- Drop shadow
+		print(hint, hint_x + 1, hint_y + 1, 0)
+		-- Main text (color 1)
+		print(hint, hint_x, hint_y, 1)
 	end
 
 end

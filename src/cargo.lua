@@ -25,7 +25,7 @@ function Cargo.aseprite_to_world(aseprite_x, aseprite_z)
 end
 
 -- Create a cargo pickup object
--- config: {aseprite_x, aseprite_z, use_heightmap, id}
+-- config: {aseprite_x, aseprite_z, use_heightmap, id, world_y}
 -- Returns: cargo object with mesh, position, and state
 function Cargo.create(config)
 	local aseprite_x = config.aseprite_x
@@ -36,9 +36,9 @@ function Cargo.create(config)
 	-- Convert Aseprite coordinates to world coordinates
 	local world_x, world_z = Cargo.aseprite_to_world(aseprite_x, aseprite_z)
 
-	-- Get terrain height
-	local world_y = 0
-	if use_heightmap then
+	-- Get terrain height (or use custom Y if provided)
+	local world_y = config.world_y or 0
+	if not config.world_y and use_heightmap then
 		world_y = Heightmap.get_height(world_x, world_z)
 	end
 
@@ -85,7 +85,7 @@ function Cargo.create(config)
 		aseprite_z = aseprite_z,
 		collected = false,
 		state = "idle",  -- States: "idle", "tethering", "attached", "delivered"
-		hover_distance = 5,  -- Distance to show prompt (5 world units = 50 meters)
+		hover_distance = 2,  -- Distance to show prompt (2 world units = 20 meters)
 		attach_distance = 0.3,  -- Distance to attach (0.3 world units = 3 meters)
 		tether_speed = 5.0,  -- Movement speed when tethering (5.0 world units = 50 m/s)
 		bob_offset = 0,  -- For floating animation

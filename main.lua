@@ -1,9 +1,16 @@
 -- PARAMETERS (EASY TO ADJUST!)
 
+-- Mission testing
+local mission_testing = true  -- If true, all missions are unlocked
+
+-- Game mode
+local game_mode = "arcade"  -- "arcade" or "simulation"
+
 -- UI toggles
 local show_debug = false
 local show_mission_ui = true
 local show_ship_collision_box = false  -- Toggle ship collision wireframe
+local show_cargo_debug = false  -- Toggle cargo debug info (temporary for Mission 3 debug)
 
 -- Ship collision box dimensions
 local SHIP_COLLISION_WIDTH = 1.5   -- Default width
@@ -50,7 +57,14 @@ local Building = include("src/building.lua")
 local Cargo = include("src/cargo.lua")
 local Mission = include("src/mission.lua")
 local Missions = include("src/missions.lua")
+local Weather = include("src/weather.lua")
 local Menu = include("src/menu.lua")
+local Aliens = include("src/aliens.lua")
+local Bullets = include("src/bullets.lua")
+local Turret = include("src/turret.lua")
+
+-- Set shared module references
+Mission.LandingPads = LandingPads
 
 -- Import sprite constants for easy reference
 local SPRITE_CUBE = Constants.SPRITE_CUBE
@@ -87,8 +101,8 @@ local SHIP_SPAWN_HEIGHT_OFFSET = -1 -- Height above landing pad surface (in worl
 local REPAIR_RATE = 10  -- Health points repaired per second when landed on pad
 local REPAIR_DELAY = 1.0  -- Seconds of being stationary before repair starts
 
--- VTOL Physics Configuration (easy tweaking)
-local VTOL_THRUST = 0.002  -- Thrust force per thruster
+-- VTOL Physics Configuration - ARCADE MODE (assisted flight)
+local VTOL_THRUST = 0.0025  -- Thrust force per thruster
 local VTOL_TORQUE_YAW = 0.001  -- Torque around Y axis (yaw)
 local VTOL_TORQUE_PITCH = 0.0008  -- Torque around X axis (pitch)
 local VTOL_TORQUE_ROLL = 0.0008  -- Torque around Z axis (roll)
@@ -99,6 +113,23 @@ local VTOL_ANGULAR_DAMPING = 0.85 -- Angular velocity damping (rotational drag)
 local VTOL_GROUND_PITCH_DAMPING = 0.8  -- Rotation damping when touching ground (pitch)
 local VTOL_GROUND_ROLL_DAMPING = 0.8   -- Rotation damping when touching ground (roll)
 
+-- VTOL Physics Configuration - SIMULATION MODE (manual flight, no assists)
+local SIM_VTOL_THRUST = 0.0025  -- Slightly weaker thrust (90%)
+local SIM_VTOL_TORQUE_YAW = 0.0012  -- Stronger yaw torque (harder to control)
+local SIM_VTOL_TORQUE_PITCH = 0.001  -- Stronger pitch torque
+local SIM_VTOL_TORQUE_ROLL = 0.001  -- Stronger roll torque
+local SIM_VTOL_MASS = 30
+local SIM_VTOL_GRAVITY = -0.005
+local SIM_VTOL_DAMPING = 0.95  -- Less air resistance (drifts more)
+local SIM_VTOL_ANGULAR_DAMPING = 0.95 -- Less rotational drag (spins more)
+local SIM_VTOL_GROUND_PITCH_DAMPING = 0.8  -- Less ground damping
+local SIM_VTOL_GROUND_ROLL_DAMPING = 0.8   -- Less ground damping
+
+-- Cargo weight penalties (when hauling cargo)
+local CARGO_THRUST_PENALTY = 0.9 -- Thrust multiplier when cargo attached (75% = 25% reduction)
+local CARGO_DAMPING_PENALTY = 1 -- Damping multiplier when cargo attached (low damping)
+local CARGO_ANGULAR_DAMPING_PENALTY = 1.1  -- Angular damping multiplier when cargo attached
+
 -- Damage Configuration
 local DAMAGE_BUILDING_THRESHOLD = 0.1  -- Minimum speed for building collision damage
 local DAMAGE_GROUND_THRESHOLD = -0.05  -- Minimum vertical velocity for ground impact damage
@@ -108,6 +139,8 @@ local DAMAGE_GROUND_MULTIPLIER = 400   -- Damage multiplier for ground impacts
 -- Rendering Configuration
 local RENDER_DISTANCE = 20  -- Far plane / fog distance
 local FOG_START_DISTANCE = 15  -- Distance where fog/fade begins (3m before render distance)
+local WEATHER_RENDER_DISTANCE = 12  -- Reduced render distance in weather
+local WEATHER_FOG_START_DISTANCE = 8  -- Fog starts closer in weather
 local DEBUG_SHOW_PHYSICS_WIREFRAME = false  -- Toggle physics collision wireframes
 local GROUND_ALWAYS_BEHIND = false  -- Force ground to render behind everything (depth bias)
 
@@ -197,9 +230,10 @@ end
 
 -- Ground plane generation now uses heightmap system
 -- Wrapper for backward compatibility - auto-sizes based on render distance
-function generate_ground_around_camera(cam_x, cam_z)
-	-- Pass nil for grid_count to auto-calculate, and RENDER_DISTANCE for optimization
-	return Heightmap.generate_terrain(cam_x, cam_z, nil, RENDER_DISTANCE)
+function generate_ground_around_camera(cam_x, cam_z, render_distance)
+	-- Pass nil for grid_count to auto-calculate, and render_distance for optimization
+	local effective_render_dist = render_distance or RENDER_DISTANCE
+	return Heightmap.generate_terrain(cam_x, cam_z, nil, effective_render_dist)
 end
 
 -- Generate city buildings (10 skyscraper-style buildings)
@@ -320,6 +354,23 @@ local landing_pad_3 = LandingPads.create_pad_aseprite({
 	collision_y_offset = -1.0
 })
 
+-- Pad 4: Landing Pad D at aseprite coords (44, 95)
+local landing_pad_4 = LandingPads.create_pad_aseprite({
+	id = 4,
+	name = Constants.LANDING_PAD_NAMES[4],
+	aseprite_x = 44,
+	aseprite_z = 95,
+	mesh = landing_pad_mesh,
+	scale = 0.5,
+	sprite = SPRITE_LANDING_PAD,
+	collision_dims = {
+		width = pad_width,
+		height = 2,
+		depth = pad_depth
+	},
+	collision_y_offset = -1.0
+})
+
 -- Keep reference to primary pad for backward compatibility
 local landing_pad = landing_pad_1
 
@@ -348,6 +399,25 @@ end
 for _, face in ipairs(tree_mesh.faces) do
 	face[4] = SPRITE_TREES  -- Set sprite index to trees
 end
+
+-- Load UFO meshes
+local ufo_fighter_mesh = load_obj("ufo_fighter.obj")
+local ufo_mother_mesh = load_obj("ufo_mother.obj")
+
+-- Set sprite for UFO meshes
+if ufo_fighter_mesh then
+	for _, face in ipairs(ufo_fighter_mesh.faces) do
+		face[4] = 28  -- Fighter sprite
+	end
+end
+if ufo_mother_mesh then
+	for _, face in ipairs(ufo_mother_mesh.faces) do
+		face[4] = 27  -- Mother ship sprite
+	end
+end
+
+-- Initialize turret
+Turret.init()
 
 -- Generate random tree positions (max 3 per 20m x 20m cell)
 local trees = {}
@@ -568,11 +638,25 @@ local function spawn_speed_line(ship)
 end
 
 -- Function to start a mission
-local function start_mission(mission_num)
+local function start_mission(mission_num, mode)
+	-- Set game mode
+	game_mode = mode or "arcade"
+
 	-- Reset VTOL state (spawn on landing pad 1)
 	local spawn_x, spawn_y, spawn_z, spawn_yaw = LandingPads.get_spawn(1)
 	spawn_y += SHIP_SPAWN_HEIGHT_OFFSET  -- Apply spawn height offset
 	vtol:reset(spawn_x, spawn_y, spawn_z, spawn_yaw)
+
+	-- Apply physics based on game mode
+	if game_mode == "simulation" then
+		vtol.thrust = SIM_VTOL_THRUST
+		vtol.damping = SIM_VTOL_DAMPING
+		vtol.angular_damping = SIM_VTOL_ANGULAR_DAMPING
+	else
+		vtol.thrust = VTOL_THRUST
+		vtol.damping = VTOL_DAMPING
+		vtol.angular_damping = VTOL_ANGULAR_DAMPING
+	end
 
 	-- Reset camera
 	camera.x = 0
@@ -602,7 +686,22 @@ local function start_mission(mission_num)
 
 	-- Start mission using missions module
 	Mission.reset()
+	Mission.current_mission_num = mission_num  -- Track current mission for unlocking
+	-- Provide building references to Missions module
+	Missions.buildings = buildings
+	Missions.building_configs = building_configs
+	Missions.Weather = Weather
 	Missions.start(mission_num, Mission)
+
+	-- Reset combat systems
+	Aliens.reset()
+	Bullets.reset()
+	Turret.reset()
+
+	-- Start first wave only for Mission 6
+	if mission_num == 6 then
+		Aliens.start_next_wave(vtol)
+	end
 
 	Menu.active = false
 end
@@ -616,11 +715,11 @@ end
 -- draw_collision_wireframe is now in Collision module
 
 -- Wrapper for render_mesh to track culling stats and use Renderer module
-local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance)
+local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, fog_start_distance)
 	-- Use provided render distance or default
 	local effective_render_distance = render_distance or RENDER_DISTANCE
-	-- If custom render distance provided, disable fog by setting fog start to same value
-	local effective_fog_distance = render_distance and render_distance or FOG_START_DISTANCE
+	-- Use provided fog start distance or default
+	local effective_fog_distance = fog_start_distance or FOG_START_DISTANCE
 
 	-- Early culling check
 	local obj_x = offset_x or 0
@@ -648,6 +747,7 @@ local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_ov
 end
 
 -- Initialize menu at startup
+Menu.mission_testing = mission_testing
 Menu.init()
 
 function _update()
@@ -658,9 +758,9 @@ function _update()
 
 	-- Handle menu updates
 	if Menu.active then
-		local action, mission_num = Menu.update(delta_time)
+		local action, mission_num, mode = Menu.update(delta_time)
 		if action == "start_mission" and mission_num then
-			start_mission(mission_num)
+			start_mission(mission_num, mode)
 		end
 		return  -- Don't update game while in menu
 	end
@@ -671,8 +771,10 @@ function _update()
 	end
 	last_tab_state = key("tab")
 
-	-- Toggle mission UI (G key)
-	if key("g") and not (last_g_state) then
+	-- Toggle mission UI (G key) - but force show if mission complete
+	if Mission.complete_flag then
+		show_mission_ui = true  -- Force show when mission complete
+	elseif key("g") and not (last_g_state) then
 		show_mission_ui = not show_mission_ui
 	end
 	last_g_state = key("g")
@@ -682,8 +784,10 @@ function _update()
 		if key("q") and not (last_q_state) then
 			-- Return to main menu
 			Mission.reset()
+			Weather.set_enabled(false)  -- Disable weather when returning to menu
 			Mission.show_pause_menu = false
 			Menu.active = true
+			Menu.mission_testing = mission_testing
 			Menu.init()
 			-- Reset camera to initial menu state
 			camera.x = initial_camera_state.x
@@ -702,7 +806,9 @@ function _update()
 		-- Q key returns to menu
 		if key("q") then
 			Mission.reset()
+			Weather.set_enabled(false)  -- Disable weather when mission complete
 			Menu.active = true
+			Menu.mission_testing = mission_testing
 			Menu.init()
 			-- Reset camera to initial menu state
 			camera.x = initial_camera_state.x
@@ -844,33 +950,39 @@ function _update()
 		local s_pressed = key("s") or key("k")  -- S or K
 		local d_pressed = key("d") or key("l")  -- D or L
 
-		-- Special combination keys
-		local space_pressed = key("space")  -- Fire all thrusters
-		local n_pressed = key("n")  -- Fire A+D (left/right pair)
-		local m_pressed = key("m")  -- Fire W+S (front/back pair)
-		shift_pressed = key("lshift") or key("rshift")  -- Auto-level ship
+		-- Arcade mode: Special combination keys
+		local space_pressed = false
+		local n_pressed = false
+		local m_pressed = false
+
+		if game_mode == "arcade" then
+			space_pressed = key("space")  -- Fire all thrusters
+			n_pressed = key("n")  -- Fire A+D (left/right pair)
+			m_pressed = key("m")  -- Fire W+S (front/back pair)
+			shift_pressed = key("lshift") or key("rshift")  -- Auto-level ship
+		end
 
 		-- Update thruster active states
 		if space_pressed then
-			-- Space: fire all thrusters
+			-- Space: fire all thrusters (arcade only)
 			vtol.thrusters[1].active = true  -- Right (A)
 			vtol.thrusters[2].active = true  -- Left (D)
 			vtol.thrusters[3].active = true  -- Front (W)
 			vtol.thrusters[4].active = true  -- Back (S)
 		elseif n_pressed then
-			-- N: fire left/right pair (A+D)
+			-- N: fire left/right pair (A+D) (arcade only)
 			vtol.thrusters[1].active = true  -- Right (A)
 			vtol.thrusters[2].active = true  -- Left (D)
 			vtol.thrusters[3].active = false
 			vtol.thrusters[4].active = false
 		elseif m_pressed then
-			-- M: fire front/back pair (W+S)
+			-- M: fire front/back pair (W+S) (arcade only)
 			vtol.thrusters[1].active = false
 			vtol.thrusters[2].active = false
 			vtol.thrusters[3].active = true  -- Front (W)
 			vtol.thrusters[4].active = true  -- Back (S)
 		else
-			-- Normal WASD/IJKL controls
+			-- Normal WASD/IJKL controls (both modes)
 			vtol.thrusters[1].active = a_pressed  -- Right thruster (A or J)
 			vtol.thrusters[2].active = d_pressed  -- Left thruster (D or L)
 			vtol.thrusters[3].active = w_pressed  -- Front thruster (W or I)
@@ -892,6 +1004,23 @@ function _update()
 	local cos_pitch, sin_pitch = cos(vtol.pitch), sin(vtol.pitch)
 	local cos_yaw, sin_yaw = cos(vtol.yaw), sin(vtol.yaw)
 	local cos_roll, sin_roll = cos(vtol.roll), sin(vtol.roll)
+
+	-- Check if cargo is attached (affects thrust and handling)
+	local has_cargo = false
+	if Mission.cargo_objects then
+		for cargo in all(Mission.cargo_objects) do
+			if cargo.state == "attached" then
+				has_cargo = true
+				break
+			end
+		end
+	end
+
+	-- Calculate effective thrust (reduced when hauling cargo)
+	local effective_thrust = vtol.thrust
+	if has_cargo then
+		effective_thrust *= CARGO_THRUST_PENALTY
+	end
 
 	-- Apply thrust and torque for each active thruster
 	for i, thruster in ipairs(vtol.thrusters) do
@@ -915,10 +1044,10 @@ function _update()
 			local tx_roll = tx_yaw * cos_roll - ty_pitch * sin_roll
 			local ty_roll = tx_yaw * sin_roll + ty_pitch * cos_roll
 
-			-- Apply thrust in world space
-			vtol.vx += tx_roll * vtol.thrust
-			vtol.vy += ty_roll * vtol.thrust
-			vtol.vz += tz_pitch * vtol.thrust
+			-- Apply thrust in world space (using effective thrust)
+			vtol.vx += tx_roll * effective_thrust
+			vtol.vy += ty_roll * effective_thrust
+			vtol.vz += tz_pitch * effective_thrust
 
 			-- Calculate torque: thrusters push from below, creating pitch and roll
 			-- Thruster on left/right (x != 0) creates roll around Z axis
@@ -970,13 +1099,20 @@ function _update()
 	vtol.yaw += vtol.vyaw
 	vtol.roll += vtol.vroll
 
-	-- Apply damping
-	vtol.vx *= vtol.damping
-	vtol.vy *= vtol.damping
-	vtol.vz *= vtol.damping
-	vtol.vpitch *= vtol.angular_damping
-	vtol.vyaw *= vtol.angular_damping
-	vtol.vroll *= vtol.angular_damping
+	-- Apply damping (reduced when hauling cargo)
+	local effective_damping = vtol.damping
+	local effective_angular_damping = vtol.angular_damping
+	if has_cargo then
+		effective_damping *= CARGO_DAMPING_PENALTY
+		effective_angular_damping *= CARGO_ANGULAR_DAMPING_PENALTY
+	end
+
+	vtol.vx *= effective_damping
+	vtol.vy *= effective_damping
+	vtol.vz *= effective_damping
+	vtol.vpitch *= effective_angular_damping
+	vtol.vyaw *= effective_angular_damping
+	vtol.vroll *= effective_angular_damping
 
 	-- Map boundary collision (bounce back if out of bounds)
 	if USE_HEIGHTMAP then
@@ -1060,37 +1196,39 @@ function _update()
 		end
 	end
 
-	-- Landing pad collision using collision object
-	if landing_pad.collision then
-		local bounds = landing_pad.collision:get_bounds()
+	-- Landing pad collision for all pads using collision objects
+	for _, pad in ipairs(LandingPads.get_all()) do
+		if pad.collision then
+			local bounds = pad.collision:get_bounds()
 
-		if Collision.point_in_box(vtol.x, vtol.z, landing_pad.x, landing_pad.z, bounds.half_width, bounds.half_depth) then
-			-- VTOL is horizontally above/inside landing pad
-			-- Check if VTOL is within the vertical bounds of the pad
-			if vtol.y > bounds.bottom and vtol.y < bounds.top then
-				-- Side collision with landing pad - push out using Collision module
-				vtol.x, vtol.z = Collision.push_out_of_box(
-					vtol.x, vtol.z,
-					landing_pad.x, landing_pad.z,
-					bounds.half_width, bounds.half_depth
-				)
+			if Collision.point_in_box(vtol.x, vtol.z, pad.x, pad.z, bounds.half_width, bounds.half_depth) then
+				-- VTOL is horizontally above/inside landing pad
+				-- Check if VTOL is within the vertical bounds of the pad
+				if vtol.y > bounds.bottom and vtol.y < bounds.top then
+					-- Side collision with landing pad - push out using Collision module
+					vtol.x, vtol.z = Collision.push_out_of_box(
+						vtol.x, vtol.z,
+						pad.x, pad.z,
+						bounds.half_width, bounds.half_depth
+					)
 
-				-- Calculate collision velocity for damage
-				local collision_speed = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
-				if collision_speed > DAMAGE_BUILDING_THRESHOLD then
-					local damage = collision_speed * DAMAGE_BUILDING_MULTIPLIER
-					vtol:take_damage(damage)
+					-- Calculate collision velocity for damage
+					local collision_speed = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
+					if collision_speed > DAMAGE_BUILDING_THRESHOLD then
+						local damage = collision_speed * DAMAGE_BUILDING_MULTIPLIER
+						vtol:take_damage(damage)
 
-					-- Spawn explosion effect at random engine
-					add_explosion(vtol)
+						-- Spawn explosion effect at random engine
+						add_explosion(vtol)
+					end
+
+					-- Kill velocity when hitting side
+					vtol.vx *= 0.5
+					vtol.vz *= 0.5
+				elseif vtol.y >= bounds.top then
+					-- Above landing pad - it's a landing surface
+					ground_height = max(ground_height, bounds.top)
 				end
-
-				-- Kill velocity when hitting side
-				vtol.vx *= 0.5
-				vtol.vz *= 0.5
-			elseif vtol.y >= bounds.top then
-				-- Above landing pad - it's a landing surface
-				ground_height = max(ground_height, bounds.top)
 			end
 		end
 	end
@@ -1100,6 +1238,12 @@ function _update()
 	local terrain_height = 0
 	if USE_HEIGHTMAP then
 		terrain_height = Heightmap.get_height(vtol.x, vtol.z)
+	end
+
+	-- Instant death if ship touches water (terrain_height == 0)
+	if terrain_height == 0 and vtol.y <= 0.5 then
+		vtol:take_damage(9999)  -- Instant death
+		add_explosion(vtol)
 	end
 
 	local landing_height = max(ground_height, terrain_height) + 0.5
@@ -1128,14 +1272,23 @@ function _update()
 	-- Check if ship is on landing pad and repair if stationary
 	is_on_landing_pad = false
 	current_landing_pad = nil
-	if landing_pad.collision and is_grounded then
-		local bounds = landing_pad.collision:get_bounds()
-		-- Check if ship is within landing pad horizontal bounds
-		if Collision.point_in_box(vtol.x, vtol.z, landing_pad.x, landing_pad.z, bounds.half_width, bounds.half_depth) then
-			-- Ship is on the landing pad
-			is_on_landing_pad = true
-			current_landing_pad = landing_pad
+	if is_grounded then
+		-- Check all landing pads to see which one (if any) the ship is on
+		for _, pad in ipairs(LandingPads.get_all()) do
+			if pad.collision then
+				local bounds = pad.collision:get_bounds()
+				-- Check if ship is within landing pad horizontal bounds
+				if Collision.point_in_box(vtol.x, vtol.z, pad.x, pad.z, bounds.half_width, bounds.half_depth) then
+					-- Ship is on this landing pad
+					is_on_landing_pad = true
+					current_landing_pad = pad
+					break  -- Only on one pad at a time
+				end
+			end
+		end
 
+		-- If on a landing pad, handle repair
+		if is_on_landing_pad and current_landing_pad then
 			-- Calculate if ship is stationary (very low velocity)
 			local total_velocity = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
 			local total_angular_velocity = abs(vtol.vpitch) + abs(vtol.vyaw) + abs(vtol.vroll)
@@ -1263,6 +1416,133 @@ function _update()
 	-- Pass is_on_landing_pad status to mission for cargo delivery
 	Mission.update(delta_time, vtol.x, vtol.y, vtol.z, right_click_held, is_on_landing_pad, vtol.pitch, vtol.yaw, vtol.roll, engines_off, current_landing_pad)
 
+	-- Update weather system
+	Weather.update(delta_time, camera, vtol.y)
+	Weather.apply_wind(vtol, vtol.y, is_on_landing_pad)
+
+	-- Update combat systems
+	Aliens.update(delta_time, vtol)
+	Bullets.update(delta_time)
+
+	-- Check bullet-terrain/building collisions
+	for i = #Bullets.bullets, 1, -1 do
+		local bullet = Bullets.bullets[i]
+		if bullet.active then
+			-- Check terrain collision
+			if USE_HEIGHTMAP then
+				local terrain_height = Heightmap.get_height(bullet.x, bullet.z)
+				if bullet.y <= terrain_height then
+					bullet.active = false
+					del(Bullets.bullets, bullet)
+				end
+			end
+
+			-- Check building collisions (simple proximity check)
+			for i, building in ipairs(buildings) do
+				local config = building_configs[i]
+				if config then
+					local dx = abs(bullet.x - building.x)
+					local dy = abs(bullet.y - (building.y + config.height))
+					local dz = abs(bullet.z - building.z)
+					if dx < config.width and dy < config.height and dz < config.depth then
+						bullet.active = false
+						del(Bullets.bullets, bullet)
+						break
+					end
+				end
+			end
+		end
+	end
+
+	Turret.update(delta_time, vtol, Aliens.get_all())
+
+	-- Turret auto-fire
+	if Turret.target then
+		local dir_x, dir_y, dir_z = Turret.get_fire_direction()
+		if dir_x then
+			-- Fire from turret position (1 unit above ship)
+			Bullets.spawn_player_bullet(
+				vtol.x, vtol.y + 1, vtol.z,
+				dir_x, dir_y, dir_z,
+				Turret.FIRE_RANGE
+			)
+		end
+	end
+
+	-- Enemy firing
+	for fighter in all(Aliens.fighters) do
+		if Aliens.can_fire_fighter(fighter, vtol) and fighter.fire_timer >= 1 / Aliens.FIGHTER_FIRE_RATE then
+			fighter.fire_timer = 0
+			local dx = vtol.x - fighter.x
+			local dy = vtol.y - fighter.y
+			local dz = vtol.z - fighter.z
+			local dist = sqrt(dx*dx + dy*dy + dz*dz)
+			Bullets.spawn_enemy_bullet(
+				fighter.x, fighter.y, fighter.z,
+				dx/dist, dy/dist, dz/dist,
+				Aliens.FIGHTER_FIRE_RANGE
+			)
+		end
+	end
+
+	-- Mother ship bullet hell
+	if Aliens.mother_ship and Aliens.mother_ship.fire_timer >= 1 / Aliens.MOTHER_SHIP_FIRE_RATE then
+		Aliens.mother_ship.fire_timer = 0
+		-- Spiral pattern: 8 bullets in a circle
+		for i = 0, 7 do
+			local angle = (i / 8 + Aliens.mother_ship.fire_angle) * 1
+			local dir_x = cos(angle) * 0.7
+			local dir_y = -0.3  -- Slight downward
+			local dir_z = sin(angle) * 0.7
+			Bullets.spawn_enemy_bullet(
+				Aliens.mother_ship.x, Aliens.mother_ship.y, Aliens.mother_ship.z,
+				dir_x, dir_y, dir_z,
+				Aliens.MOTHER_SHIP_FIRE_RANGE
+			)
+		end
+	end
+
+	-- Check bullet collisions with player
+	local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
+	local player_bounds = {
+		left = vtol.x - ship_width/2,
+		right = vtol.x + ship_width/2,
+		bottom = vtol.y - ship_height/2,
+		top = vtol.y + ship_height/2,
+		back = vtol.z - ship_depth/2,
+		front = vtol.z + ship_depth/2
+	}
+	local player_hits = Bullets.check_collision("player", player_bounds)
+	for hit in all(player_hits) do
+		vtol:take_damage(2)  -- 2 damage per bullet (reduced from 10)
+		add_explosion(vtol)
+	end
+
+	-- Check bullet collisions with aliens
+	for alien in all(Aliens.get_all()) do
+		-- Simple bounds for aliens (1x1x1 cube for now)
+		local alien_bounds = {
+			left = alien.x - 0.5,
+			right = alien.x + 0.5,
+			bottom = alien.y - 0.5,
+			top = alien.y + 0.5,
+			back = alien.z - 0.5,
+			front = alien.z + 0.5
+		}
+		local alien_hits = Bullets.check_collision("enemy", alien_bounds)
+		for hit in all(alien_hits) do
+			alien.health -= 20  -- 20 damage per bullet (unchanged)
+		end
+	end
+
+	-- Wave progression
+	if Aliens.wave_complete then
+		if not Aliens.start_next_wave(vtol) then
+			-- All waves complete - could trigger mission complete
+			-- Mission.complete()
+		end
+	end
+
 	-- Handle cargo delivery - snap ship to landed position without damage
 	if Mission.cargo_just_delivered then
 		Mission.cargo_just_delivered = false  -- Reset flag
@@ -1300,11 +1580,26 @@ function _draw()
 	objects_rendered = 0
 	objects_culled = 0
 
+	-- Apply weather overrides for fog and render distance
+	local effective_render_distance = RENDER_DISTANCE
+	local effective_fog_start = FOG_START_DISTANCE
+	if Weather.enabled then
+		effective_render_distance = WEATHER_RENDER_DISTANCE
+		effective_fog_start = WEATHER_FOG_START_DISTANCE
+	end
+
 	-- Collect all faces from all meshes
 	local all_faces = {}
 
 	-- Render skybox (always at camera position, draws behind everything)
-	local skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, nil, true)  -- true = no distance culling
+	-- Use sprite 23 for Mission 5 (cloudy sky), flash brighter during lightning
+	local skybox_sprite = nil
+	if Weather.enabled then
+		-- Mission 5: use cloudy sky (sprite 23)
+		skybox_sprite = 23
+		-- TODO: could add a brighter sprite for lightning flashes
+	end
+	local skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true)  -- true = no distance culling
 	for _, f in ipairs(skybox_sorted) do
 		f.depth = 999999  -- Push skybox to back (always draws behind)
 		f.is_skybox = true  -- Mark as skybox to exclude from fog
@@ -1312,7 +1607,7 @@ function _draw()
 	end
 
 	-- Generate and render ground plane dynamically around camera
-	local ground_verts, ground_faces = generate_ground_around_camera(camera.x, camera.z)
+	local ground_verts, ground_faces = generate_ground_around_camera(camera.x, camera.z, effective_render_distance)
 
 	-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
 	local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
@@ -1325,7 +1620,7 @@ function _draw()
 		end
 	end
 
-	local ground_sorted = render_mesh(ground_verts, ground_faces, 0, 0, 0, nil, true)
+	local ground_sorted = render_mesh(ground_verts, ground_faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
 	for _, f in ipairs(ground_sorted) do
 		add(all_faces, f)
 	end
@@ -1338,24 +1633,34 @@ function _draw()
 			building.x,
 			building.y,
 			building.z,
-			building.sprite_override
+			building.sprite_override,
+			false,
+			nil, nil, nil,
+			effective_render_distance,
+			effective_fog_start
 		)
 		for _, f in ipairs(building_faces) do
 			add(all_faces, f)
 		end
 	end
 
-	-- Render landing pad
-	local pad_faces = render_mesh(
-		landing_pad.verts,
-		landing_pad.faces,
-		landing_pad.x,
-		landing_pad.y,
-		landing_pad.z,
-		landing_pad.sprite_override
-	)
-	for _, f in ipairs(pad_faces) do
-		add(all_faces, f)
+	-- Render all landing pads
+	for _, pad in ipairs(LandingPads.get_all()) do
+		local pad_faces = render_mesh(
+			pad.verts,
+			pad.faces,
+			pad.x,
+			pad.y,
+			pad.z,
+			pad.sprite_override,
+			false,
+			nil, nil, nil,
+			effective_render_distance,
+			effective_fog_start
+		)
+		for _, f in ipairs(pad_faces) do
+			add(all_faces, f)
+		end
 	end
 
 	-- Render all trees
@@ -1366,7 +1671,11 @@ function _draw()
 			tree.x,
 			tree.y,
 			tree.z,
-			tree.sprite_override
+			tree.sprite_override,
+			false,
+			nil, nil, nil,
+			effective_render_distance,
+			effective_fog_start
 		)
 		for _, f in ipairs(tree_faces) do
 			add(all_faces, f)
@@ -1391,7 +1700,9 @@ function _draw()
 				cargo.z,
 				nil,  -- no sprite override
 				false,  -- not ground
-				cargo.pitch, cargo.yaw, cargo.roll  -- Use cargo rotation (matches ship when attached)
+				cargo.pitch, cargo.yaw, cargo.roll,  -- Use cargo rotation (matches ship when attached)
+				effective_render_distance,
+				effective_fog_start
 			)
 			for _, f in ipairs(cargo_faces) do
 				add(all_faces, f)
@@ -1409,6 +1720,52 @@ function _draw()
 	local smoke_faces = smoke_system:render(render_mesh, camera)
 	for _, f in ipairs(smoke_faces) do
 		f.is_vtol = true  -- Mark smoke as VTOL-related
+		add(all_faces, f)
+	end
+
+	-- Render bullets
+	local bullet_faces = Bullets.render(render_mesh, camera)
+	for _, f in ipairs(bullet_faces) do
+		add(all_faces, f)
+	end
+
+	-- Render aliens
+	for alien in all(Aliens.get_all()) do
+		local alien_mesh = alien.type == "fighter" and ufo_fighter_mesh or ufo_mother_mesh
+		if alien_mesh and alien_mesh.verts then
+			local alien_faces = render_mesh(
+				alien_mesh.verts,
+				alien_mesh.faces,
+				alien.x,
+				alien.y,
+				alien.z,
+				nil,
+				false,
+				0, alien.yaw, 0,
+				effective_render_distance,
+				effective_fog_start
+			)
+			for _, f in ipairs(alien_faces) do
+				add(all_faces, f)
+			end
+		end
+	end
+
+	-- Render turret (attached to ship, 1 unit above)
+	local turret_faces = render_mesh(
+		Turret.verts,
+		Turret.faces,
+		vtol.x,
+		vtol.y + 1,
+		vtol.z,
+		nil,
+		false,
+		Turret.pitch, Turret.yaw, 0,
+		effective_render_distance,
+		effective_fog_start
+	)
+	for _, f in ipairs(turret_faces) do
+		f.is_vtol = true  -- Mark turret as VTOL-related
 		add(all_faces, f)
 	end
 
@@ -1432,7 +1789,9 @@ function _draw()
 		false,  -- not ground
 		vtol.pitch,
 		vtol.yaw,
-		vtol.roll
+		vtol.roll,
+		effective_render_distance,
+		effective_fog_start
 	)
 	for _, f in ipairs(vtol_sorted) do
 		f.is_vtol = true  -- Mark VTOL faces
@@ -1567,21 +1926,32 @@ function _draw()
 		print("CONTROLS:", hint_x + 1, hint_y + 1, 0)
 		print("CONTROLS:", hint_x, hint_y, 7)
 		hint_y += 10
-		-- Outline
-		print("Space: All thrusters", hint_x + 1, hint_y + 1, 0)
-		print("Space: All thrusters", hint_x, hint_y, 6)
-		hint_y += 8
-		-- Outline
-		print("N:     Left+Right", hint_x + 1, hint_y + 1, 0)
-		print("N:     Left+Right", hint_x, hint_y, 6)
-		hint_y += 8
-		-- Outline
-		print("M:     Front+Back", hint_x + 1, hint_y + 1, 0)
-		print("M:     Front+Back", hint_x, hint_y, 6)
-		hint_y += 8
-		-- Outline
-		print("Shift: Auto-level", hint_x + 1, hint_y + 1, 0)
-		print("Shift: Auto-level", hint_x, hint_y, 6)
+
+		-- Show arcade controls only in arcade mode
+		if game_mode == "arcade" then
+			-- Outline
+			print("Space: All thrusters", hint_x + 1, hint_y + 1, 0)
+			print("Space: All thrusters", hint_x, hint_y, 6)
+			hint_y += 8
+			-- Outline
+			print("N:     Left+Right", hint_x + 1, hint_y + 1, 0)
+			print("N:     Left+Right", hint_x, hint_y, 6)
+			hint_y += 8
+			-- Outline
+			print("M:     Front+Back", hint_x + 1, hint_y + 1, 0)
+			print("M:     Front+Back", hint_x, hint_y, 6)
+			hint_y += 8
+			-- Outline
+			print("Shift: Auto-level", hint_x + 1, hint_y + 1, 0)
+			print("Shift: Auto-level", hint_x, hint_y, 6)
+		else
+			-- Simulation mode - show only basic controls
+			print("W/A/S/D: Individual thrusters", hint_x + 1, hint_y + 1, 0)
+			print("W/A/S/D: Individual thrusters", hint_x, hint_y, 6)
+			hint_y += 8
+			print("No assists - manual flight!", hint_x + 1, hint_y + 1, 0)
+			print("No assists - manual flight!", hint_x, hint_y, 6)
+		end
 	end
 
 	-- -- Debug: show button states
@@ -1673,6 +2043,22 @@ function _draw()
 	-- Draw minimap using Minimap module (pass all landing pads and target pad ID)
 	Minimap.draw(camera, vtol, buildings, building_configs, LandingPads.get_all(), Heightmap, position_history, Mission.cargo_objects, Mission.required_landing_pad_id)
 
+	-- Draw enemies on minimap (flashing red dots)
+	local flash = (time() * 4) % 1 > 0.5  -- Flash at 4Hz
+	local enemy_color = flash and 8 or 24  -- Flash between colors 8 and 24
+	for alien in all(Aliens.get_all()) do
+		local minimap_x, minimap_y = Minimap.world_to_minimap(alien.x, alien.z, camera)
+		if minimap_x and minimap_y then
+			if alien.type == "mother" then
+				-- Mother ship: larger red disk
+				circfill(minimap_x, minimap_y, 3, enemy_color)
+			else
+				-- Fighter: small red dot
+				circfill(minimap_x, minimap_y, 1, enemy_color)
+			end
+		end
+	end
+
 	-- Draw 3D compass (cross/diamond shape with red and grey arrows)
 	-- Side view: <> (diamond), Front view: X (cross)
 	-- Two red arrows (north/south axis) and two grey arrows (east/west axis)
@@ -1731,7 +2117,34 @@ function _draw()
 		{from = 5, to = 4, color = 5, z = projected_points[4].z},  -- West (grey)
 	}
 
-	-- Sort arrows by depth (back to front)
+	-- Add mission target arrow to the list (orange)
+	if Mission.active and Mission.current_target then
+		local dx = Mission.current_target.x - vtol.x
+		local dz = Mission.current_target.z - vtol.z
+
+		-- Normalize to compass size (invert direction)
+		local mag = sqrt(dx*dx + dz*dz)
+		if mag > 0.01 then
+			local target_point = {x = (-dx / mag) * compass_size, y = 0, z = (-dz / mag) * compass_size}
+
+			-- Transform by camera rotation (same as north arrow)
+			local x_yaw = target_point.x * cos_yaw - target_point.z * sin_yaw
+			local z_yaw = target_point.x * sin_yaw + target_point.z * cos_yaw
+			local y_pitch = target_point.y * cos_pitch - z_yaw * sin_pitch
+			local z_pitch = target_point.y * sin_pitch + z_yaw * cos_pitch
+
+			-- Add target arrow to the list with depth
+			add(arrows, {
+				screen_x = compass_x + x_yaw,
+				screen_y = compass_y + y_pitch,
+				color = 9,  -- Orange
+				z = z_pitch,
+				is_target = true
+			})
+		end
+	end
+
+	-- Sort arrows by depth (back to front, furthest first)
 	for i = 1, #arrows do
 		for j = i + 1, #arrows do
 			if arrows[i].z > arrows[j].z then
@@ -1740,47 +2153,24 @@ function _draw()
 		end
 	end
 
-	-- Draw arrows in sorted order
+	-- Draw arrows in sorted order (back to front)
 	for _, arrow in ipairs(arrows) do
-		local p1 = projected_points[arrow.from]
-		local p2 = projected_points[arrow.to]
-		line(p1.x, p1.y, p2.x, p2.y, arrow.color)
-		-- Draw arrowhead (small circle at tip)
-		circfill(p2.x, p2.y, 1, arrow.color)
-	end
-
-	-- Center dot
-	circfill(compass_x, compass_y, 2, 0)  -- Black center
-	circ(compass_x, compass_y, 2, 7)  -- White outline
-
-	-- Draw mission target direction indicator (orange arrow)
-	-- Points to current mission objective (cargo, landing pad, etc.)
-	if Mission.active and Mission.current_target then
-		local dx = Mission.current_target.x - vtol.x
-		local dz = Mission.current_target.z - vtol.z
-
-		-- Create 3D point in direction of target (invert for correct direction)
-		local target_point = {x = -dx, y = 0, z = -dz}
-		-- Normalize to compass size
-		local mag = sqrt(dx*dx + dz*dz)
-		if mag > 0.01 then
-			target_point.x = (-dx / mag) * compass_size
-			target_point.z = (-dz / mag) * compass_size
-
-			-- Transform by camera rotation
-			local x_yaw = target_point.x * cos_yaw - target_point.z * sin_yaw
-			local z_yaw = target_point.x * sin_yaw + target_point.z * cos_yaw
-			local y_pitch = 0 * cos_pitch - z_yaw * sin_pitch
-
-			-- Project to screen
-			local target_screen_x = compass_x + x_yaw
-			local target_screen_y = compass_y + y_pitch
-
-			-- Draw orange arrow to target
-			line(compass_x, compass_y, target_screen_x, target_screen_y, 9)  -- Orange
-			circfill(target_screen_x, target_screen_y, 2, 9)  -- Orange arrowhead
+		if arrow.is_target then
+			-- Draw target arrow (orange)
+			line(compass_x, compass_y, arrow.screen_x, arrow.screen_y, arrow.color)
+			circfill(arrow.screen_x, arrow.screen_y, 2, arrow.color)  -- Larger arrowhead
+		else
+			-- Draw compass direction arrows
+			local p1 = projected_points[arrow.from]
+			local p2 = projected_points[arrow.to]
+			line(p1.x, p1.y, p2.x, p2.y, arrow.color)
+			circfill(p2.x, p2.y, 1, arrow.color)  -- Smaller arrowhead
 		end
 	end
+
+	-- Center dot (drawn last, always on top)
+	circfill(compass_x, compass_y, 2, 0)  -- Black center
+	circ(compass_x, compass_y, 2, 7)  -- White outline
 
 	-- Altitude counter (1 world unit = 10 meters)
 	local altitude_meters = vtol.y * 10
@@ -1842,8 +2232,9 @@ function _draw()
 		end
 	end
 
-	-- Draw speed lines (3D line particles)
-	for speed_line in all(speed_lines) do
+	-- Draw speed lines (3D line particles) - disabled when weather is active
+	if not Weather.enabled then
+		for speed_line in all(speed_lines) do
 		-- Transform line position to camera space
 		local lx = speed_line.x - camera.x
 		local ly = speed_line.y - camera.y
@@ -1907,6 +2298,7 @@ function _draw()
 				end
 			end
 		end
+		end
 	end
 
 	-- Draw physics wireframes (if enabled) using Collision module
@@ -1927,7 +2319,7 @@ function _draw()
 		-- Draw landing pad collision box (white) if within render distance
 		local dx = landing_pad.x - camera.x
 		local dz = landing_pad.z - camera.z
-		if dx*dx + dz*dz <= RENDER_DISTANCE * RENDER_DISTANCE then
+		if dx*dx + dz*dz <= effective_render_distance * effective_render_distance then
 			if landing_pad.collision then
 				Collision.draw_collision_wireframe(landing_pad.collision, camera, 7)
 			end
@@ -1937,7 +2329,7 @@ function _draw()
 		for i, building in ipairs(buildings) do
 			local dx = building.x - camera.x
 			local dz = building.z - camera.z
-			if dx*dx + dz*dz <= RENDER_DISTANCE * RENDER_DISTANCE then
+			if dx*dx + dz*dz <= effective_render_distance * effective_render_distance then
 				-- Get building config for accurate dimensions
 				local config = building_configs[i]
 				if config then
@@ -1979,9 +2371,9 @@ function _draw()
 	end
 
 	-- Debug: Show cargo state if cargo exists
-	if Mission.cargo_objects and #Mission.cargo_objects > 0 then
+	if show_cargo_debug and Mission.cargo_objects and #Mission.cargo_objects > 0 then
 		local debug_x = 10
-		local debug_y = 200
+		local debug_y = 100
 		local y_offset = 0
 
 		print("=== CARGO DEBUG ===", debug_x, debug_y + y_offset, 11)
@@ -2017,14 +2409,34 @@ function _draw()
 		print("On pad: " .. (is_on_landing_pad and "YES" or "NO"), debug_x, debug_y + y_offset, 6)
 		y_offset += 8
 
-		-- Show distance to landing pad
-		if Mission.landing_pad_pos then
-			local dx = vtol.x - Mission.landing_pad_pos.x
-			local dz = vtol.z - Mission.landing_pad_pos.z
-			local dist = sqrt(dx*dx + dz*dz)
-			print("Pad dist: " .. flr(dist * 100) / 100, debug_x, debug_y + y_offset, 6)
+		-- Show distance to target landing pad (using required_landing_pad_id)
+		if Mission.required_landing_pad_id then
+			local target_pad = LandingPads.get_pad(Mission.required_landing_pad_id)
+			if target_pad then
+				print("Target Pad: ID " .. Mission.required_landing_pad_id, debug_x, debug_y + y_offset, 6)
+				y_offset += 8
+				print("  Pos: (" .. flr(target_pad.x) .. ", " .. flr(target_pad.z) .. ")", debug_x, debug_y + y_offset, 6)
+				y_offset += 8
+
+				local dx = vtol.x - target_pad.x
+				local dz = vtol.z - target_pad.z
+				local dist = sqrt(dx*dx + dz*dz)
+				print("Pad dist: " .. flr(dist * 100) / 100, debug_x, debug_y + y_offset, 6)
+				y_offset += 8
+			end
+		end
+
+		-- Show compass target
+		if Mission.current_target then
+			print("Compass: (" .. flr(Mission.current_target.x) .. ", " .. flr(Mission.current_target.z) .. ")", debug_x, debug_y + y_offset, 11)
 			y_offset += 8
-			print("Pad radius: " .. Mission.LANDING_PAD_RADIUS, debug_x, debug_y + y_offset, 6)
+
+			-- Show distance to compass target in red
+			local dx = vtol.x - Mission.current_target.x
+			local dz = vtol.z - Mission.current_target.z
+			local dist = sqrt(dx*dx + dz*dz)
+			print("Target dist: " .. flr(dist * 100) / 100, debug_x, debug_y + y_offset, 8)
+			y_offset += 8
 		end
 	end
 
@@ -2077,4 +2489,9 @@ function _draw()
 
 
 	Mission.draw_pause_menu()
+
+	-- Draw rain as lines (if weather enabled)
+	if Weather.enabled then
+		Weather.draw_rain_lines(camera, vtol)
+	end
 end

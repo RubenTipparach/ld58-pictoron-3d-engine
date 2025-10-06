@@ -28,7 +28,9 @@ Constants.SPRITE_HEIGHTMAP = 64  -- Heightmap data source (128x128)
 Constants.LANDING_PAD_NAMES = {
 	[1] = "Landing Pad A",
 	[2] = "Landing Pad B",
-	[3] = "Landing Pad C"
+	[3] = "Landing Pad C",
+	[4] = "Landing Pad D",
+	[5] = "Landing Pad E (Debug)"
 }
 
 -- Coordinate conversion utilities

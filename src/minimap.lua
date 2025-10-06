@@ -22,6 +22,29 @@ function Minimap.set_terrain_cache(cache)
 	terrain_cache = cache
 end
 
+-- Convert world coordinates to minimap screen coordinates
+-- Returns nil if out of minimap bounds
+function Minimap.world_to_minimap(world_x, world_z, camera)
+	-- Get heightmap reference (assume 128x128 map with TILE_SIZE = 4)
+	local TILE_SIZE = 4
+	local MAP_SIZE = 128
+
+	-- Calculate pixels per world unit
+	local pixels_per_world_unit = (Minimap.SIZE / MAP_SIZE) / TILE_SIZE
+
+	-- Convert to minimap coordinates (centered on camera)
+	local minimap_x = Minimap.X + Minimap.SIZE / 2 + world_x * pixels_per_world_unit
+	local minimap_y = Minimap.Y + Minimap.SIZE / 2 + world_z * pixels_per_world_unit
+
+	-- Check if within minimap bounds
+	if minimap_x < Minimap.X or minimap_x > Minimap.X + Minimap.SIZE or
+	   minimap_y < Minimap.Y or minimap_y > Minimap.Y + Minimap.SIZE then
+		return nil, nil
+	end
+
+	return minimap_x, minimap_y
+end
+
 -- Generate a color-coded minimap visualization from heightmap
 -- Samples height values and averages surrounding pixels for smooth visualization
 -- @param heightmap: heightmap module reference

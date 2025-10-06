@@ -3,6 +3,9 @@ local Cargo = include("src/cargo.lua")
 
 local Mission = {}
 
+-- Reference to LandingPads module (set externally from main.lua)
+Mission.LandingPads = nil
+
 -- MISSION PARAMETERS (EASY TO ADJUST!)
 
 -- General mission settings
@@ -20,6 +23,23 @@ Mission.M2_CARGO_DISTANCE_X = -100  -- Cargo X offset from landing pad (units, n
 Mission.M2_CARGO_DISTANCE_Z = 20     -- Cargo Z offset from landing pad (units)
 Mission.M2_CARGO_COUNT = 1          -- Number of cargo boxes
 
+-- Mission 3: Scientific Mission
+Mission.M3_BUILDING_ID = 10         -- Building ID for Command Tower
+Mission.M3_LANDING_PAD_ID = 4       -- Landing Pad D (ID 4) - Crater expedition staging area
+Mission.M3_CARGO_COUNT = 1          -- Number of scientist pods
+
+-- Mission 4: Ocean Rescue
+Mission.M4_CARGO_ASEPRITE_X = 105   -- Cargo pickup location
+Mission.M4_CARGO_ASEPRITE_Z = 57    -- Cargo pickup location
+Mission.M4_LANDING_PAD_ID = 2       -- Landing Pad B (ID 2)
+Mission.M4_CARGO_COUNT = 1          -- Number of cargo boxes
+
+-- Mission 5: Secret Weapon
+Mission.M5_CARGO_ASEPRITE_X = 54    -- Cargo location
+Mission.M5_CARGO_ASEPRITE_Z = 60    -- Cargo location
+Mission.M5_LANDING_PAD_ID = 3       -- Landing Pad C (ID 3)
+Mission.M5_CARGO_COUNT = 1          -- Number of cargo boxes
+
 -- Mission state
 Mission.current_objectives = {}
 Mission.cargo_objects = {}
@@ -36,6 +56,7 @@ Mission.type = nil  -- Mission type: "hover", "cargo", etc.
 Mission.hover_timer = 0  -- Timer for hover mission
 Mission.hover_duration = 0  -- Required hover time
 Mission.mission_name = ""  -- Name of current mission
+Mission.current_mission_num = nil  -- Current mission number (1-5)
 
 -- Initialize a hover mission (take off, hover, land)
 -- hover_duration: how long to hover in seconds
@@ -50,13 +71,13 @@ function Mission.start_hover_mission(hover_duration, landing_pad_x, landing_pad_
 	Mission.show_pause_menu = false
 
 	-- Store landing pad position and ID
-	Mission.landing_pad_pos.x = landing_pad_x or 0
-	Mission.landing_pad_pos.z = landing_pad_z or 0
+	Mission.landing_pad_pos.x = landing_pad_x
+	Mission.landing_pad_pos.z = landing_pad_z
 	Mission.required_landing_pad_id = landing_pad_id or 1
 
 	-- Set target to landing pad (hover mission always returns to start pad)
-	Mission.current_target.x = landing_pad_x or 0
-	Mission.current_target.z = landing_pad_z or 0
+	Mission.current_target.x = landing_pad_x
+	Mission.current_target.z = landing_pad_z
 
 	-- Set objective text
 	Mission.current_objectives = {
@@ -68,7 +89,7 @@ function Mission.start_hover_mission(hover_duration, landing_pad_x, landing_pad_
 end
 
 -- Initialize a mission with cargo pickups
--- cargo_coords: array of {aseprite_x, aseprite_z} coordinates
+-- cargo_coords: array of {aseprite_x, aseprite_z, world_y (optional)} coordinates
 -- landing_pad_x, landing_pad_z: landing pad position for navigation
 -- landing_pad_id: ID of the landing pad to deliver to (default 1)
 function Mission.start_cargo_mission(cargo_coords, landing_pad_x, landing_pad_z, landing_pad_id)
@@ -90,16 +111,22 @@ function Mission.start_cargo_mission(cargo_coords, landing_pad_x, landing_pad_z,
 		local cargo = Cargo.create({
 			aseprite_x = coord.aseprite_x,
 			aseprite_z = coord.aseprite_z,
-			use_heightmap = true,
+			use_heightmap = coord.world_y == nil,  -- Only use heightmap if world_y not specified
+			world_y = coord.world_y,  -- Optional custom Y position
 			id = i
 		})
 		add(Mission.cargo_objects, cargo)
 	end
 
-	-- Set initial target to first cargo location
+	-- Set initial target to first cargo location (will switch to landing pad when cargo picked up)
 	if Mission.cargo_objects[1] then
 		Mission.current_target.x = Mission.cargo_objects[1].x
 		Mission.current_target.z = Mission.cargo_objects[1].z
+	else
+		-- No cargo, point to landing pad
+		local target_pad = Mission.LandingPads.get_pad(Mission.required_landing_pad_id)
+		Mission.current_target.x = target_pad.x
+		Mission.current_target.z = target_pad.z
 	end
 
 	-- Set objective text with button prompts for mission 1
@@ -151,9 +178,20 @@ function Mission.update(delta_time, ship_x, ship_y, ship_z, right_click_held, sh
 			Mission.collected_cargo += 1
 			Mission.current_objectives[2] = "Cargo: " .. Mission.collected_cargo .. "/" .. Mission.total_cargo
 
-			-- Switch target to landing pad when cargo is collected
-			Mission.current_target.x = Mission.landing_pad_pos.x
-			Mission.current_target.z = Mission.landing_pad_pos.z
+			-- Switch target to the required landing pad when cargo is picked up
+			-- Debug: Check what's nil
+			if not Mission.LandingPads then
+				stop("ERROR: Mission.LandingPads is nil!")
+			end
+			if not Mission.required_landing_pad_id then
+				stop("ERROR: Mission.required_landing_pad_id is nil!")
+			end
+			local target_pad = Mission.LandingPads.get_pad(Mission.required_landing_pad_id)
+			if not target_pad then
+				stop("ERROR: get_pad returned nil for ID " .. Mission.required_landing_pad_id)
+			end
+			Mission.current_target.x = target_pad.x
+			Mission.current_target.z = target_pad.z
 		end
 
 		-- Check if cargo delivered when landed on pad with cargo attached and engines off
@@ -204,6 +242,14 @@ function Mission.complete()
 		"",
 		"[Q] Return to Menu"
 	}
+
+	-- Unlock next mission (if not in testing mode)
+	if Mission.current_mission_num then
+		local next_mission_key = "mission_" .. (Mission.current_mission_num + 1)
+		local progress = fetch("/appdata/mission_progress.pod") or {}
+		progress[next_mission_key] = true
+		store("/appdata/mission_progress.pod", progress)
+	end
 end
 
 -- Reset mission
