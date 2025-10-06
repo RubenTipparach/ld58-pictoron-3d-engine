@@ -10,12 +10,63 @@ Minimap.SIZE = 64  -- 64x64 pixels
 Minimap.SCALE = 2  -- World units per pixel
 Minimap.BG_COLOR = 1  -- Dark blue background
 
+-- Minimap terrain color scheme
+Minimap.TERRAIN_COLORS = {21, 5, 22, 6, 2, 24, 8, 10}  -- Heights 1-32+
+Minimap.WATER_COLOR = 1  -- Height 0
+
 -- Cached terrain texture (set externally)
 local terrain_cache = nil
 
 -- Set the terrain cache (called from main)
 function Minimap.set_terrain_cache(cache)
 	terrain_cache = cache
+end
+
+-- Generate a color-coded minimap visualization from heightmap
+-- Samples height values and averages surrounding pixels for smooth visualization
+-- @param heightmap: heightmap module reference
+-- @return userdata: 128x128 u8 array with color indices
+function Minimap.generate_terrain_cache(heightmap)
+	-- Initialize heightmap on first call if needed
+	if not heightmap then
+		return nil
+	end
+
+	-- Get heightmap data
+	local heightmap_data = get_spr(heightmap.SPRITE_INDEX)
+	if not heightmap_data then
+		return nil
+	end
+
+	-- Create output minimap texture
+	local minimap = userdata("u8", heightmap.MAP_SIZE, heightmap.MAP_SIZE)
+
+	-- Process each pixel by sampling heightmap directly
+	for z = 0, heightmap.MAP_SIZE - 1 do
+		for x = 0, heightmap.MAP_SIZE - 1 do
+			-- Sample height value directly from heightmap (0-32)
+			local idx = z * heightmap.MAP_SIZE + x
+			local height_value = heightmap_data[idx]
+
+			-- Direct height-to-color mapping
+			local color
+			if height_value == 0 then
+				-- Height 0: water
+				color = Minimap.WATER_COLOR
+			else
+				-- Heights 1-32: map to terrain colors array
+				-- 9 colors for 32 height values = ~3.5 height units per color
+				local color_idx = flr((height_value - 1) / (32 / #Minimap.TERRAIN_COLORS))
+				color_idx = mid(0, color_idx, #Minimap.TERRAIN_COLORS - 1)
+				color = Minimap.TERRAIN_COLORS[color_idx + 1]
+			end
+
+			-- Store color in minimap
+			minimap[idx] = color
+		end
+	end
+
+	return minimap
 end
 
 -- Draw the minimap
@@ -26,9 +77,9 @@ end
 -- @param landing_pad: landing pad object
 -- @param heightmap: heightmap module reference
 -- @param position_history: array of {x, z, t} position records
-function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, heightmap, position_history)
-	-- Border (black, 2 pixels thick)
-	rectfill(Minimap.X - 2, Minimap.Y - 2, Minimap.X + Minimap.SIZE + 2, Minimap.Y + Minimap.SIZE + 2, 0)
+function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, heightmap, position_history, cargo_objects)
+	-- Border (black, 2 pixels thick) - moved 1 pixel left
+	rectfill(Minimap.X - 2, Minimap.Y - 2, Minimap.X + Minimap.SIZE + 1, Minimap.Y + Minimap.SIZE + 1, 0)
 
 	-- Draw color-coded minimap from cached terrain visualization
 	if terrain_cache then
@@ -67,10 +118,24 @@ function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, he
 		end
 	end
 
-	-- Draw landing pad on minimap (1 pixel like buildings)
+	-- Draw landing pad on minimap (2x2 pixels for visibility)
 	local pad_x = Minimap.X + Minimap.SIZE / 2 + landing_pad.x * pixels_per_world_unit
 	local pad_y = Minimap.Y + Minimap.SIZE / 2 + landing_pad.z * pixels_per_world_unit
-	pset(pad_x, pad_y, 11)  -- Green 1 pixel
+	-- Draw as 2x2 white square for better visibility
+	rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 7)  -- White 2x2 pixels
+
+	-- Draw cargo objects on minimap
+	if cargo_objects then
+		for cargo in all(cargo_objects) do
+			-- Only draw if not attached to ship
+			if cargo.state ~= "attached" and cargo.state ~= "delivered" then
+				local cargo_minimap_x = Minimap.X + Minimap.SIZE / 2 + cargo.x * pixels_per_world_unit
+				local cargo_minimap_y = Minimap.Y + Minimap.SIZE / 2 + cargo.z * pixels_per_world_unit
+				-- Draw as 2x2 orange square for visibility
+				rectfill(cargo_minimap_x - 1, cargo_minimap_y - 1, cargo_minimap_x, cargo_minimap_y, 9)  -- Orange
+			end
+		end
+	end
 
 	-- Draw player position indicator (centered on landing pad, not camera)
 	-- Calculate player offset from landing pad (world origin)

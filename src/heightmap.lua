@@ -1,13 +1,15 @@
 -- Heightmap Terrain System
 -- Generates terrain geometry from a 128x128 heightmap stored as userdata
 
+local Constants = include("src/constants.lua")
 local Heightmap = {}
 
 -- Configuration
 Heightmap.MAP_SIZE = 128  -- 128x128 heightmap
 Heightmap.TILE_SIZE = 4   -- Size of each terrain quad (matches current ground grid)
 Heightmap.HEIGHT_SCALE = 0.5  -- How much each color index raises the terrain (0.5m per index)
-Heightmap.SPRITE_INDEX = 64  -- Sprite 64 = spritesheet 1, sprite 0 (64 sprites per sheet)
+Heightmap.MAX_HEIGHT = 32  -- Maximum height value (0-32 range)
+Heightmap.SPRITE_INDEX = Constants.SPRITE_HEIGHTMAP  -- Heightmap data source sprite
 
 -- Cache for height values
 local height_cache = {}
@@ -31,11 +33,14 @@ end
 
 -- Set height value at a specific tile
 -- @param tile_x, tile_z: tile coordinates (0-127)
--- @param height_value: height in color indices (0-15)
+-- @param height_value: height in color indices (0-32, clamped)
 function Heightmap.set_tile_height(tile_x, tile_z, height_value)
 	if tile_x < 0 or tile_x >= Heightmap.MAP_SIZE or tile_z < 0 or tile_z >= Heightmap.MAP_SIZE then
 		return
 	end
+
+	-- Clamp height to valid range
+	height_value = mid(0, height_value, Heightmap.MAX_HEIGHT)
 
 	local pixel_index = tile_z * Heightmap.MAP_SIZE + tile_x
 	heightmap_data[pixel_index] = height_value
@@ -149,24 +154,71 @@ function Heightmap.generate_terrain(cam_x, cam_z, grid_count, render_distance)
 			-- Check if quad is flat (all vertices at same height)
 			local is_flat = (h1 == h2 and h2 == h3 and h3 == h4)
 
-			-- Get height value from heightmap at quad center
-			local world_x = center_x + gx * Heightmap.TILE_SIZE - half_size + Heightmap.TILE_SIZE / 2
-			local world_z = center_z + gz * Heightmap.TILE_SIZE - half_size + Heightmap.TILE_SIZE / 2
-			local tile_x, tile_z = Heightmap.world_to_tile(world_x, world_z)
-			local height_value = 0
-			if tile_x >= 0 and tile_x < Heightmap.MAP_SIZE and tile_z >= 0 and tile_z < Heightmap.MAP_SIZE then
-				local pixel_index = tile_z * Heightmap.MAP_SIZE + tile_x
-				height_value = heightmap_data[pixel_index]
+			-- Get height values for all 4 corners of the quad
+			local world_x1 = center_x + gx * Heightmap.TILE_SIZE - half_size
+			local world_z1 = center_z + gz * Heightmap.TILE_SIZE - half_size
+			local world_x2 = world_x1 + Heightmap.TILE_SIZE
+			local world_z2 = world_z1 + Heightmap.TILE_SIZE
+
+			-- Sample all 4 corners
+			local tile_x1, tile_z1 = Heightmap.world_to_tile(world_x1, world_z1)
+			local tile_x2, tile_z2 = Heightmap.world_to_tile(world_x2, world_z2)
+
+			local height_values = {}
+			-- Corner 1 (top-left)
+			if tile_x1 >= 0 and tile_x1 < Heightmap.MAP_SIZE and tile_z1 >= 0 and tile_z1 < Heightmap.MAP_SIZE then
+				add(height_values, heightmap_data[tile_z1 * Heightmap.MAP_SIZE + tile_x1])
+			end
+			-- Corner 2 (top-right)
+			if tile_x2 >= 0 and tile_x2 < Heightmap.MAP_SIZE and tile_z1 >= 0 and tile_z1 < Heightmap.MAP_SIZE then
+				add(height_values, heightmap_data[tile_z1 * Heightmap.MAP_SIZE + tile_x2])
+			end
+			-- Corner 3 (bottom-right)
+			if tile_x2 >= 0 and tile_x2 < Heightmap.MAP_SIZE and tile_z2 >= 0 and tile_z2 < Heightmap.MAP_SIZE then
+				add(height_values, heightmap_data[tile_z2 * Heightmap.MAP_SIZE + tile_x2])
+			end
+			-- Corner 4 (bottom-left)
+			if tile_x1 >= 0 and tile_x1 < Heightmap.MAP_SIZE and tile_z2 >= 0 and tile_z2 < Heightmap.MAP_SIZE then
+				add(height_values, heightmap_data[tile_z2 * Heightmap.MAP_SIZE + tile_x1])
 			end
 
-			-- Water only on flat surfaces at height 0, otherwise ground texture
-			local sprite_id = (is_flat and height_value == 0) and 12 or 2
+			-- For slopes, use the LOWEST height value; for flat areas, use the height value
+			local height_value = 0
+			if #height_values > 0 then
+				if is_flat then
+					-- Flat: use any height (they're all the same)
+					height_value = height_values[1]
+				else
+					-- Slope: use minimum height for consistency
+					height_value = height_values[1]
+					for _, h in ipairs(height_values) do
+						if h < height_value then
+							height_value = h
+						end
+					end
+				end
+			end
 
-			-- UV coordinates with 4x4 tiling (64x64 pixels = 4 tiles of 16x16)
+			-- Determine if this is water (flat and height 0)
+			local is_water = (is_flat and height_value == 0)
+
+			-- Choose sprite based on height
+			local sprite_id
+			if is_water then
+				sprite_id = Constants.SPRITE_WATER
+			elseif height_value >= 10 then
+				sprite_id = Constants.SPRITE_ROCKS
+			elseif height_value >= 3 then
+				sprite_id = Constants.SPRITE_GRASS
+			else
+				sprite_id = Constants.SPRITE_GROUND
+			end
+
+			-- UV coordinates with 2x2 tiling (32x32 pixels = 2 tiles of 16x16)
 			local uv_tl = vec(0, 0)
-			local uv_tr = vec(64, 0)
-			local uv_br = vec(64, 64)
-			local uv_bl = vec(0, 64)
+			local uv_tr = vec(32, 0)
+			local uv_br = vec(32, 32)
+			local uv_bl = vec(0, 32)
 
 			-- First triangle (v1, v2, v3)
 			add(faces, {v1, v2, v3, sprite_id, uv_tl, uv_tr, uv_br})
@@ -220,88 +272,5 @@ function Heightmap.tile_to_world(tile_x, tile_z)
 	local world_z = tile_z * Heightmap.TILE_SIZE - half_world + Heightmap.TILE_SIZE / 2
 	return world_x, world_z
 end
-
--- Generate a color-coded minimap visualization
--- Samples height values and averages surrounding pixels for smooth visualization
--- @return userdata: 128x128 u8 array with color indices
-function Heightmap.generate_minimap()
-	-- Initialize on first call if needed
-	if not heightmap_data then
-		Heightmap.init()
-	end
-
-	-- Create output minimap texture
-	local minimap = userdata("u8", Heightmap.MAP_SIZE, Heightmap.MAP_SIZE)
-
-	-- Find min and max height values in the entire map for normalization
-	local min_height = 999999
-	local max_height = -999999
-	for z = 0, Heightmap.MAP_SIZE - 1 do
-		for x = 0, Heightmap.MAP_SIZE - 1 do
-			local idx = z * Heightmap.MAP_SIZE + x
-			local color_idx = heightmap_data[idx]
-			local height = color_idx * Heightmap.HEIGHT_SCALE
-			min_height = min(min_height, height)
-			max_height = max(max_height, height)
-		end
-	end
-
-	-- Avoid division by zero
-	local height_range = max_height - min_height
-	if height_range == 0 then
-		height_range = 1
-	end
-
-	-- Minimap terrain color scheme
-	-- IMPORTANT: Colors 21, 5, 22, 6, 7 are RESERVED for terrain only on the minimap
-	-- Do not use these colors for buildings, trees, or other minimap elements
-	-- Normalized based on tallest feature in the map
-	local terrain_colors = {21, 5, 22, 6, 7}  -- Low to high elevation
-
-	-- Process each pixel with 3x3 averaging for smooth visualization
-	for z = 0, Heightmap.MAP_SIZE - 1 do
-		for x = 0, Heightmap.MAP_SIZE - 1 do
-			-- Sample height with 3x3 kernel averaging
-			local height_sum = 0
-			local sample_count = 0
-
-			for dz = -1, 1 do
-				for dx = -1, 1 do
-					local sx = x + dx
-					local sz = z + dz
-
-					-- Bounds check
-					if sx >= 0 and sx < Heightmap.MAP_SIZE and
-					   sz >= 0 and sz < Heightmap.MAP_SIZE then
-						local idx = sz * Heightmap.MAP_SIZE + sx
-						local color_idx = heightmap_data[idx]
-						local height = color_idx * Heightmap.HEIGHT_SCALE
-						height_sum = height_sum + height
-						sample_count = sample_count + 1
-					end
-				end
-			end
-
-			-- Calculate average height
-			local avg_height = height_sum / sample_count
-
-			-- Normalize height to 0-1 range based on actual map min/max
-			local normalized_height = (avg_height - min_height) / height_range
-
-			-- Map normalized height to color index (0-4 maps to 5 colors)
-			local color_idx = flr(normalized_height * (#terrain_colors - 0.001))  -- -0.001 prevents overflow
-			color_idx = mid(0, color_idx, #terrain_colors - 1)  -- Clamp to valid range
-			local color = terrain_colors[color_idx + 1]  -- +1 because Lua arrays start at 1
-
-			-- Store color in minimap
-			minimap[z * Heightmap.MAP_SIZE + x] = color
-		end
-	end
-
-	return minimap
-end
-
--- Don't auto-initialize - let it load on first use
--- This allows the sprite system to be ready first
 
 return Heightmap

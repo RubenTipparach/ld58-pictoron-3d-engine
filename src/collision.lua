@@ -3,6 +3,36 @@
 
 local Collision = {}
 
+-- Collision Object (AABB - Axis-Aligned Bounding Box)
+-- @param x, y, z: center position
+-- @param width, height, depth: full dimensions
+-- @param y_offset: optional Y offset to adjust collision box position (default 0)
+-- @return collision object with bounds
+function Collision.create_box(x, y, z, width, height, depth, y_offset)
+	y_offset = y_offset or 0
+
+	return {
+		x = x,
+		y = y,
+		z = z,
+		width = width,
+		height = height,
+		depth = depth,
+		y_offset = y_offset,
+
+		-- Calculate actual bounds with offset
+		get_bounds = function(self)
+			local adjusted_y = self.y + self.y_offset
+			return {
+				top = adjusted_y + self.height,
+				bottom = adjusted_y,
+				half_width = self.width / 2,
+				half_depth = self.depth / 2
+			}
+		end
+	}
+end
+
 -- Check if a point is inside an axis-aligned bounding box
 -- @param point_x, point_z: point coordinates (2D horizontal plane)
 -- @param box_x, box_z: box center position
@@ -62,6 +92,27 @@ function Collision.calculate_bounds(verts)
 	end
 
 	return min_x, max_x, min_y, max_y, min_z, max_z
+end
+
+-- Draw wireframe for a collision object
+-- @param collision_obj: collision object created with create_box()
+-- @param camera: camera object
+-- @param color: line color
+function Collision.draw_collision_wireframe(collision_obj, camera, color)
+	local bounds = collision_obj:get_bounds()
+	local adjusted_y = collision_obj.y + collision_obj.y_offset
+	local center_y = adjusted_y + collision_obj.height / 2
+
+	Collision.draw_wireframe(
+		camera,
+		collision_obj.x,
+		center_y,
+		collision_obj.z,
+		collision_obj.width,
+		collision_obj.height,
+		collision_obj.depth,
+		color
+	)
 end
 
 -- Helper function to draw wireframe collision box in 3D
