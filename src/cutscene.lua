@@ -76,19 +76,27 @@ Cutscene.char_timer = 0
 Cutscene.chars_shown = 0
 Cutscene.scene_complete = false
 Cutscene.skip_used_this_frame = false
+Cutscene.default_sfx_addr = nil  -- Store default sfx address to restore later
 
 -- Initialize cutscene
-function Cutscene.start(scene_num)
+function Cutscene.start(scene_num, intro_addr)
 	Cutscene.active = true
 	Cutscene.current_scene = scene_num or 1
 	Cutscene.char_timer = 0
 	Cutscene.chars_shown = 0
 	Cutscene.scene_complete = false
+
+	-- Play intro music from custom base address
+	if intro_addr then
+		music(0, nil, nil, intro_addr)  -- Play pattern 0 from intro_addr
+	end
 end
 
 -- Stop cutscene
 function Cutscene.stop()
 	Cutscene.active = false
+	-- Stop music when cutscene ends
+	music(-1)
 end
 
 -- Update cutscene (text reveal animation)

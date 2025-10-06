@@ -64,6 +64,19 @@ local Bullets = include("src/bullets.lua")
 local Turret = include("src/turret.lua")
 local Cutscene = include("src/cutscene.lua")
 
+-- Cache sound files at startup for performance
+local intro_music = fetch("sfx/introsong.sfx")
+local intro_music_addr = 0x80000  -- Use a dedicated address for intro music
+if intro_music then
+	intro_music:poke(intro_music_addr)  -- Load music data to this address
+end
+
+local level_music = fetch("sfx/firstlevelsong.sfx")
+local level_music_addr = 0xC0000  -- Use a separate address for level music
+if level_music then
+	level_music:poke(level_music_addr)  -- Load music data to this address
+end
+
 -- Set shared module references
 Mission.LandingPads = LandingPads
 -- Import sprite constants for easy reference
@@ -870,7 +883,7 @@ function _update()
 		elseif action == "story" then
 			-- Start story cutscene
 			Menu.active = false
-			Cutscene.start(1)
+			Cutscene.start(1, intro_music_addr)
 		end
 		return  -- Don't update game while in menu
 	end
