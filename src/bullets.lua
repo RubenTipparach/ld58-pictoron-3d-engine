@@ -10,14 +10,14 @@ end
 Bullets.MAX_BULLETS = 100  -- Total bullet budget
 Bullets.PLAYER_SPRITE = 25
 Bullets.ENEMY_SPRITE = 26
-Bullets.BULLET_SPEED = 0.5  -- Units per frame (slower for dodging)
+Bullets.BULLET_SPEED = 5  -- Units per second (50 m/s - slow for dodging)
 Bullets.BULLET_SIZE = 0.2  -- Billboard size
-Bullets.PLAYER_FIRE_RATE = 1  -- Bullets per second
-Bullets.PLAYER_FIRE_COOLDOWN = 1 / Bullets.PLAYER_FIRE_RATE
+Bullets.PLAYER_FIRE_RATE = 1  -- Bullets per second (0 = disabled)
+Bullets.PLAYER_FIRE_COOLDOWN = Bullets.PLAYER_FIRE_RATE > 0 and (1 / Bullets.PLAYER_FIRE_RATE) or 999999
 
 -- Enemy firing configuration (EASY TO ADJUST!)
-Bullets.ENEMY_FIRE_RATE = 0.5  -- Bullets per second per enemy
-Bullets.ENEMY_FIRE_COOLDOWN = 1 / Bullets.ENEMY_FIRE_RATE
+Bullets.ENEMY_FIRE_RATE = 0  -- Bullets per second per enemy (0 = disabled)
+Bullets.ENEMY_FIRE_COOLDOWN = Bullets.ENEMY_FIRE_RATE > 0 and (1 / Bullets.ENEMY_FIRE_RATE) or 999999
 
 -- Active bullets
 Bullets.bullets = {}
@@ -80,10 +80,10 @@ function Bullets.update(delta_time)
 		local bullet = Bullets.bullets[i]
 
 		if bullet.active then
-			-- Move bullet
-			bullet.x += bullet.vx
-			bullet.y += bullet.vy
-			bullet.z += bullet.vz
+			-- Move bullet (with delta_time for consistent speed)
+			bullet.x += bullet.vx * delta_time
+			bullet.y += bullet.vy * delta_time
+			bullet.z += bullet.vz * delta_time
 
 			-- Check range
 			local dx = bullet.x - bullet.start_x
@@ -100,28 +100,46 @@ function Bullets.update(delta_time)
 	end
 end
 
--- Render bullets as billboards (like smoke particles)
+-- Render bullets as camera-facing billboards (same logic as smoke particles)
 function Bullets.render(render_mesh_func, camera)
 	local all_bullet_faces = {}
 
 	for bullet in all(Bullets.bullets) do
 		if bullet.active then
-			-- Create billboard quad
-			local size = Bullets.BULLET_SIZE
-			local bullet_verts = {
-				vec(-size, -size, 0),
-				vec(size, -size, 0),
-				vec(size, size, 0),
-				vec(-size, size, 0)
+			-- BILLBOARD MODE: Create camera-facing quad
+			local half_size = Bullets.BULLET_SIZE
+
+			-- Camera forward vector (direction camera is looking)
+			local forward_x = sin(camera.ry) * cos(camera.rx)
+			local forward_y = sin(camera.rx)
+			local forward_z = cos(camera.ry) * cos(camera.rx)
+
+			-- Camera right vector (perpendicular to forward, in XZ plane)
+			local right_x = cos(camera.ry)
+			local right_y = 0
+			local right_z = -sin(camera.ry)
+
+			-- Camera up vector (cross product of forward and right, inverted)
+			local up_x = -(forward_y * right_z - forward_z * right_y)
+			local up_y = -(forward_z * right_x - forward_x * right_z)
+			local up_z = -(forward_x * right_y - forward_y * right_x)
+
+			-- Build quad vertices using right and up vectors
+			local billboard_verts = {
+				vec(-right_x * half_size + up_x * half_size, -right_y * half_size + up_y * half_size, -right_z * half_size + up_z * half_size),  -- Top-left
+				vec(right_x * half_size + up_x * half_size, right_y * half_size + up_y * half_size, right_z * half_size + up_z * half_size),    -- Top-right
+				vec(right_x * half_size - up_x * half_size, right_y * half_size - up_y * half_size, right_z * half_size - up_z * half_size),    -- Bottom-right
+				vec(-right_x * half_size - up_x * half_size, -right_y * half_size - up_y * half_size, -right_z * half_size - up_z * half_size),  -- Bottom-left
 			}
 
-			local bullet_faces = {
-				{1, 2, 3, bullet.sprite},
-				{1, 3, 4, bullet.sprite}
+			-- Billboard faces with proper UV coordinates (16x16 textures)
+			local billboard_faces = {
+				{1, 2, 3, bullet.sprite, vec(0,0), vec(16,0), vec(16,16)},
+				{1, 3, 4, bullet.sprite, vec(0,0), vec(16,16), vec(0,16)}
 			}
 
 			-- Render billboard at bullet position
-			local faces = render_mesh_func(bullet_verts, bullet_faces, bullet.x, bullet.y, bullet.z, nil, false)
+			local faces = render_mesh_func(billboard_verts, billboard_faces, bullet.x, bullet.y, bullet.z, nil, false)
 			for _, f in ipairs(faces) do
 				add(all_bullet_faces, f)
 			end

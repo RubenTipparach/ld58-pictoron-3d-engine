@@ -137,8 +137,8 @@ local DAMAGE_BUILDING_MULTIPLIER = 50  -- Damage multiplier for building collisi
 local DAMAGE_GROUND_MULTIPLIER = 400   -- Damage multiplier for ground impacts
 
 -- Rendering Configuration
-local RENDER_DISTANCE = 20  -- Far plane / fog distance
-local FOG_START_DISTANCE = 15  -- Distance where fog/fade begins (3m before render distance)
+local RENDER_DISTANCE = 15  -- Far plane / fog distance
+local FOG_START_DISTANCE = 10  -- Distance where fog/fade begins (3m before render distance)
 local WEATHER_RENDER_DISTANCE = 12  -- Reduced render distance in weather
 local WEATHER_FOG_START_DISTANCE = 8  -- Fog starts closer in weather
 local DEBUG_SHOW_PHYSICS_WIREFRAME = false  -- Toggle physics collision wireframes
@@ -404,15 +404,21 @@ end
 local ufo_fighter_mesh = load_obj("ufo_fighter.obj")
 local ufo_mother_mesh = load_obj("ufo_mother.obj")
 
--- Set sprite for UFO meshes
+-- Set sprite for UFO meshes (32x32 texture)
 if ufo_fighter_mesh then
 	for _, face in ipairs(ufo_fighter_mesh.faces) do
-		face[4] = 28  -- Fighter sprite
+		face[4] = 28  -- Fighter sprite (32x32)
+		-- UVs should be normalized (0-1 range) - don't scale them
+		-- The sprite size is 32x32 but UVs are already correct from OBJ
 	end
 end
 if ufo_mother_mesh then
 	for _, face in ipairs(ufo_mother_mesh.faces) do
 		face[4] = 27  -- Mother ship sprite
+		-- Scale UVs to 128x128 (mothership uses larger texture)
+		if face[5] then face[5] = vec(face[5].x * 128, face[5].y * 128) end
+		if face[6] then face[6] = vec(face[6].x * 128, face[6].y * 128) end
+		if face[7] then face[7] = vec(face[7].x * 128, face[7].y * 128) end
 	end
 end
 
@@ -1458,20 +1464,21 @@ function _update()
 
 	-- Turret auto-fire
 	if Turret.target then
-		local dir_x, dir_y, dir_z = Turret.get_fire_direction()
+		local dir_x, dir_y, dir_z = Turret.get_fire_direction(vtol)
 		if dir_x then
-			-- Fire from turret position (1 unit above ship)
+			-- Fire from turret position
+			local turret_x, turret_y, turret_z = Turret.get_position(vtol.x, vtol.y, vtol.z, vtol.pitch, vtol.yaw, vtol.roll)
 			Bullets.spawn_player_bullet(
-				vtol.x, vtol.y + 1, vtol.z,
+				turret_x, turret_y, turret_z,
 				dir_x, dir_y, dir_z,
 				Turret.FIRE_RANGE
 			)
 		end
 	end
 
-	-- Enemy firing
+	-- Enemy firing (using Bullets.ENEMY_FIRE_RATE)
 	for fighter in all(Aliens.fighters) do
-		if Aliens.can_fire_fighter(fighter, vtol) and fighter.fire_timer >= 1 / Aliens.FIGHTER_FIRE_RATE then
+		if Aliens.can_fire_fighter(fighter, vtol) and fighter.fire_timer >= Bullets.ENEMY_FIRE_COOLDOWN then
 			fighter.fire_timer = 0
 			local dx = vtol.x - fighter.x
 			local dy = vtol.y - fighter.y
@@ -1485,7 +1492,7 @@ function _update()
 		end
 	end
 
-	-- Mother ship bullet hell
+	-- Mother ship bullet hell (uses its own fire rate for bullet hell pattern)
 	if Aliens.mother_ship and Aliens.mother_ship.fire_timer >= 1 / Aliens.MOTHER_SHIP_FIRE_RATE then
 		Aliens.mother_ship.fire_timer = 0
 		-- Spiral pattern: 8 bullets in a circle
@@ -1751,22 +1758,76 @@ function _draw()
 		end
 	end
 
-	-- Render turret (attached to ship, 1 unit above)
+	-- Render turret (attached to ship, using proper mount position and quaternion rotation)
+	local turret_x, turret_y, turret_z = Turret.get_position(vtol.x, vtol.y, vtol.z, vtol.pitch, vtol.yaw, vtol.roll)
+	local turret_pitch, turret_yaw, turret_roll = Turret.get_euler_angles()
 	local turret_faces = render_mesh(
 		Turret.verts,
 		Turret.faces,
-		vtol.x,
-		vtol.y + 1,
-		vtol.z,
+		turret_x,
+		turret_y,
+		turret_z,
 		nil,
 		false,
-		Turret.pitch, Turret.yaw, 0,
+		turret_pitch, turret_yaw, turret_roll,
 		effective_render_distance,
 		effective_fog_start
 	)
 	for _, f in ipairs(turret_faces) do
 		f.is_vtol = true  -- Mark turret as VTOL-related
 		add(all_faces, f)
+	end
+
+	-- DEBUG: Draw 1x1x1 wireframe box around turret position
+	local box_size = 0.5
+	local debug_box_verts = {
+		{x=turret_x-box_size, y=turret_y-box_size, z=turret_z-box_size},
+		{x=turret_x+box_size, y=turret_y-box_size, z=turret_z-box_size},
+		{x=turret_x+box_size, y=turret_y+box_size, z=turret_z-box_size},
+		{x=turret_x-box_size, y=turret_y+box_size, z=turret_z-box_size},
+		{x=turret_x-box_size, y=turret_y-box_size, z=turret_z+box_size},
+		{x=turret_x+box_size, y=turret_y-box_size, z=turret_z+box_size},
+		{x=turret_x+box_size, y=turret_y+box_size, z=turret_z+box_size},
+		{x=turret_x-box_size, y=turret_y+box_size, z=turret_z+box_size}
+	}
+	-- Project and draw box edges
+	for i = 1, 8 do
+		local v = debug_box_verts[i]
+		local sx, sy, depth = Turret.project_3d_to_2d(v.x, v.y, v.z, camera)
+		if sx then
+			debug_box_verts[i].sx = sx
+			debug_box_verts[i].sy = sy
+		end
+	end
+	-- Draw wireframe edges (yellow)
+	local edges = {{1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},{1,5},{2,6},{3,7},{4,8}}
+	for edge in all(edges) do
+		local v1, v2 = debug_box_verts[edge[1]], debug_box_verts[edge[2]]
+		if v1.sx and v2.sx then
+			line(v1.sx, v1.sy, v2.sx, v2.sy, 10)  -- Yellow
+		end
+	end
+
+	-- Draw laser beam from turret (100m = 10 units) - simple red line
+	if Turret.target then
+		local dir_x, dir_y, dir_z = Turret.get_fire_direction(vtol)
+		if dir_x then
+			local laser_length = 10  -- 100 meters
+
+			-- Calculate laser end point in world space
+			local laser_end_x = turret_x + dir_x * laser_length
+			local laser_end_y = turret_y + dir_y * laser_length
+			local laser_end_z = turret_z + dir_z * laser_length
+
+			-- Project both points to screen space
+			local start_sx, start_sy, start_depth = Turret.project_3d_to_2d(turret_x, turret_y, turret_z, camera)
+			local end_sx, end_sy, end_depth = Turret.project_3d_to_2d(laser_end_x, laser_end_y, laser_end_z, camera)
+
+			-- Draw line if both points are visible
+			if start_sx and end_sx and start_depth > 0 and end_depth > 0 then
+				line(start_sx, start_sy, end_sx, end_sy, 8)  -- Red laser (color 8)
+			end
+		end
 	end
 
 	-- Calculate if ship should flash (critically damaged)

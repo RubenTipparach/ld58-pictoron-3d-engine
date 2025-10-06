@@ -590,7 +590,8 @@ function Menu.draw(camera, render_mesh_func)
 		Menu.planet.z,
 		nil, false,
 		PLANET_PITCH, PLANET_YAW + Menu.planet.rotation, PLANET_ROLL,
-		MENU_RENDER_DISTANCE  -- Extended render distance for space scene
+		MENU_RENDER_DISTANCE,  -- Extended render distance for space scene
+		nil  -- No fog for planet
 	)
 	Renderer.sort_faces(planet_sorted)
 	Renderer.draw_faces(planet_sorted, false)
@@ -605,7 +606,8 @@ function Menu.draw(camera, render_mesh_func)
 		Menu.clouds.z,
 		nil, false,
 		PLANET_PITCH, PLANET_YAW + Menu.clouds.rotation, PLANET_ROLL,
-		MENU_RENDER_DISTANCE  -- Extended render distance for space scene
+		MENU_RENDER_DISTANCE,  -- Extended render distance for space scene
+		nil  -- No fog for clouds
 	)
 	Renderer.sort_faces(cloud_sorted)
 	Renderer.draw_faces(cloud_sorted, false)

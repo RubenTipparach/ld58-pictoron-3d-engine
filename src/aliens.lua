@@ -13,12 +13,12 @@ Aliens.FIGHTER_SPEED = 0.3
 Aliens.FIGHTER_FIRE_RATE = 2  -- Bullets per second
 Aliens.FIGHTER_FIRE_ARC = 0.125  -- 45 degrees (45/360 = 0.125)
 Aliens.FIGHTER_FIRE_RANGE = 15  -- Units
-Aliens.MOTHER_SHIP_FIRE_RATE = 10  -- Bullets per second (bullet hell)
+Aliens.MOTHER_SHIP_FIRE_RATE = 2  -- Bullets per second (reduced from 10 for performance)
 Aliens.MOTHER_SHIP_FIRE_RANGE = 25  -- Units
 
--- Wave configuration
+-- Wave configuration (DEBUG: Single fighter for testing)
 Aliens.waves = {
-	{count = 3, type = "fighter"},
+	{count = 1, type = "fighter"},  -- DEBUG: Just one fighter
 	{count = 4, type = "fighter"},
 	{count = 1, type = "mother"}
 }
@@ -84,13 +84,13 @@ function Aliens.start_next_wave(player)
 	Aliens.wave_complete = false
 
 	if wave.type == "fighter" then
-		-- Spawn fighters in a circle around player
+		-- DEBUG: Spawn fighters close to player (50m = 5 units)
 		for i = 1, wave.count do
 			local angle = (i / wave.count) * 1  -- Spread around circle
-			local distance = 30
+			local distance = 5  -- DEBUG: 50 meters (was 30)
 			local x = player.x + cos(angle) * distance
 			local z = player.z + sin(angle) * distance
-			local y = player.y + 5 + rnd() * 5  -- Slightly above player
+			local y = player.y + 2  -- DEBUG: Same height as player (was +5 to +10)
 			local fighter = Aliens.spawn_fighter(x, y, z)
 			fighter.target = player
 		end
@@ -112,7 +112,11 @@ function Aliens.update(delta_time, player)
 		if fighter.health <= 0 then
 			del(Aliens.fighters, fighter)
 		else
-			Aliens.update_fighter(fighter, delta_time, player)
+			-- DEBUG: Make enemies stationary
+			-- Aliens.update_fighter(fighter, delta_time, player)
+
+			-- Just update fire timer
+			fighter.fire_timer += delta_time
 		end
 	end
 
@@ -121,7 +125,11 @@ function Aliens.update(delta_time, player)
 		if Aliens.mother_ship.health <= 0 then
 			Aliens.mother_ship = nil
 		else
-			Aliens.update_mother_ship(Aliens.mother_ship, delta_time, player)
+			-- DEBUG: Make mother ship stationary
+			-- Aliens.update_mother_ship(Aliens.mother_ship, delta_time, player)
+
+			-- Just update fire timer
+			Aliens.mother_ship.fire_timer += delta_time
 		end
 	end
 
