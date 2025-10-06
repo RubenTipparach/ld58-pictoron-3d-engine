@@ -88,8 +88,10 @@ end
 -- @param rot_pitch, rot_yaw, rot_roll: object rotation (optional)
 -- @param render_distance: far clipping plane distance
 -- @param ground_always_behind: apply depth bias to ground (optional, default true)
+-- @param fog_start_distance: distance at which fog starts (optional)
+-- @param is_skybox: skip pitch-based culling for skybox (optional)
 -- @return sorted_faces: array of faces ready to draw
-function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, ground_always_behind, fog_start_distance)
+function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, ground_always_behind, fog_start_distance, is_skybox)
 	-- Projection parameters
 	local fov = 70  -- Field of view
 	local near = 0.01  -- Near clipping plane
@@ -223,9 +225,16 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 			-- Dot product of normal and view vector
 			local dot = nx * view_x + ny * view_y + nz * view_z
 
+			-- For skybox, only cull based on horizontal (XZ) components, ignore pitch (Y)
+			local skybox_dot = dot
+			if is_skybox then
+				skybox_dot = nx * view_x + nz * view_z  -- Exclude Y component
+			end
+
 			-- Only render if facing camera (dot product > 0 means facing camera)
 			-- Skip backface culling for ground/skybox (is_ground flag)
-			if dot > 0 or is_ground then
+			-- For skybox, use horizontal-only dot product to avoid pitch-based culling
+			if (is_skybox and skybox_dot > -0.5) or dot > 0 or is_ground then
 				-- Screen space backface culling as backup
 				local edge1_x, edge1_y = p2.x - p1.x, p2.y - p1.y
 				local edge2_x, edge2_y = p3.x - p1.x, p3.y - p1.y

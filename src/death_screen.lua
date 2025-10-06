@@ -57,9 +57,9 @@ function DeathScreen.draw(death_timer)
 	print(death_text, text_x, text_y, DeathScreen.TEXT_COLOR)
 	fillp()  -- Reset fill pattern
 
-	-- Restart prompt (appears after total duration)
+	-- Return to menu prompt (appears after total duration)
 	if death_timer >= DeathScreen.TOTAL_DURATION then
-		local prompt = "PRESS ANY KEY TO RESTART"
+		local prompt = "PRESS ANY KEY TO RETURN TO MENU"
 		local prompt_x = 240 - (#prompt * 2)
 		-- Shadow
 		print(prompt, prompt_x + 1, 146, DeathScreen.SHADOW_COLOR)

@@ -8,7 +8,7 @@ end
 
 -- Alien configuration
 Aliens.FIGHTER_HEALTH = 100
-Aliens.MOTHER_SHIP_HEALTH = 2000
+Aliens.MOTHER_SHIP_HEALTH = 500
 Aliens.FIGHTER_SPEED = 2.0  -- Units per second
 Aliens.FIGHTER_FIRE_RATE = 2  -- Bullets per second
 Aliens.FIGHTER_FIRE_ARC = 0.125  -- 45 degrees (45/360 = 0.125)
@@ -19,14 +19,31 @@ Aliens.FIGHTER_ENGAGE_DIST = 10  -- 100 meters - get close
 Aliens.FIGHTER_RETREAT_DIST = 20  -- 200 meters - retreat distance
 Aliens.FIGHTER_ENGAGE_TIME = 10  -- Seconds to circle close
 Aliens.FIGHTER_RETREAT_TIME = 15  -- Seconds to stay far
+Aliens.FIGHTER_STATE_TIME_VARIANCE = 5  -- +/- seconds for state duration randomization
+Aliens.FIGHTER_CIRCLE_SPEED = 0.3  -- Rotation speed when circling (turns per second)
+Aliens.FIGHTER_CIRCLE_RADIUS = 10  -- Circle radius in units (15 meters)
+Aliens.FIGHTER_CIRCLE_HEIGHT_OFFSET = 2  -- Height above player when circling
+Aliens.FIGHTER_APPROACH_THRESHOLD = 2  -- Distance threshold for reaching target position
+Aliens.FIGHTER_MIN_ALTITUDE = 10  -- Minimum altitude in units (100 meters)
+Aliens.FIGHTER_MAX_ALTITUDE = 50  -- Maximum altitude in units (500 meters)
+Aliens.FIGHTER_ALTITUDE_CLIMB_SPEED = 0.5  -- Climb speed when below min altitude
+Aliens.FIGHTER_ALTITUDE_DESCEND_SPEED = -0.2  -- Descend speed when above max altitude
+Aliens.FIGHTER_BANK_MULTIPLIER = 10  -- Banking intensity (roll per yaw change)
+Aliens.FIGHTER_MAX_BANK = 0.083  -- Max bank angle (30 degrees = 0.083 turns)
+Aliens.FIGHTER_BANK_DAMPING = 0.9  -- Roll damping when not turning
 
-Aliens.MOTHER_SHIP_FIRE_RATE = 2  -- Bullets per second (reduced from 10 for performance)
+-- Mother ship behavior
+Aliens.MOTHER_SHIP_FIRE_RATE = 1  -- Bullets per second (reduced from 10 for performance)
 Aliens.MOTHER_SHIP_FIRE_RANGE = 25  -- Units
+Aliens.MOTHER_SHIP_HOVER_HEIGHT = 10  -- Height above player when following
+Aliens.MOTHER_SHIP_MAX_HEIGHT = 30  -- Maximum altitude (200 meters)
+Aliens.MOTHER_SHIP_DESCEND_SPEED = -0.1  -- Descent speed
 
 -- Wave configuration (DEBUG: Single fighter for testing)
 Aliens.waves = {
-	{count = 1, type = "fighter"},  -- DEBUG: Just one fighter
+	{count = 2, type = "fighter"},  -- DEBUG: Just one fighter
 	{count = 4, type = "fighter"},
+	{count = 5, type = "fighter"},
 	{count = 1, type = "mother"}
 }
 
@@ -62,6 +79,7 @@ function Aliens.spawn_fighter(x, y, z)
 		-- AI state
 		ai_state = "engage",  -- "engage" or "retreat"
 		ai_timer = 0,  -- Time in current state
+		ai_duration = Aliens.FIGHTER_ENGAGE_TIME + (rnd(2) - 1) * Aliens.FIGHTER_STATE_TIME_VARIANCE,  -- Randomized duration for current state
 		circle_angle = rnd(1)  -- Random starting angle for circling
 	}
 	add(Aliens.fighters, fighter)
@@ -98,7 +116,7 @@ function Aliens.reset()
 end
 
 -- Start next wave
-function Aliens.start_next_wave(player)
+function Aliens.start_next_wave(player, landing_pads)
 	Aliens.current_wave += 1
 	if Aliens.current_wave > #Aliens.waves then
 		return false  -- No more waves
@@ -119,8 +137,13 @@ function Aliens.start_next_wave(player)
 			fighter.target = player
 		end
 	elseif wave.type == "mother" then
-		-- Spawn mother ship above player
-		local mother = Aliens.spawn_mother_ship(player.x, player.y + 20, player.z)
+		-- Spawn mother ship above Landing Pad A, 1000m (100 units) to the north
+		local pad_a = landing_pads and landing_pads.get_pad("Landing Pad A")
+		local spawn_x = pad_a and pad_a.x or player.x
+		local spawn_y = player.y + 20
+		local spawn_z = (pad_a and pad_a.z or player.z) + 100
+
+		local mother = Aliens.spawn_mother_ship(spawn_x, spawn_y, spawn_z)
 		mother.target = player
 	end
 
@@ -131,8 +154,11 @@ end
 Aliens.on_fighter_destroyed = nil
 Aliens.on_mothership_destroyed = nil
 
+-- Callback for shooting bullets (set from main.lua)
+Aliens.spawn_bullet = nil
+
 -- Update all aliens
-function Aliens.update(delta_time, player)
+function Aliens.update(delta_time, player, player_on_pad)
 	-- Update fighters
 	for i = #Aliens.fighters, 1, -1 do
 		local fighter = Aliens.fighters[i]
@@ -144,7 +170,7 @@ function Aliens.update(delta_time, player)
 			end
 			del(Aliens.fighters, fighter)
 		else
-			Aliens.update_fighter(fighter, delta_time, player)
+			Aliens.update_fighter(fighter, delta_time, player, player_on_pad)
 		end
 	end
 
@@ -159,11 +185,8 @@ function Aliens.update(delta_time, player)
 			Aliens.mother_ship_destroyed_time = time()  -- Record destruction time
 			Aliens.mother_ship = nil
 		else
-			-- DEBUG: Make mother ship stationary
-			-- Aliens.update_mother_ship(Aliens.mother_ship, delta_time, player)
-
-			-- Just update fire timer
-			Aliens.mother_ship.fire_timer += delta_time
+			-- Update mother ship behavior (includes bottom turret)
+			Aliens.update_mother_ship(Aliens.mother_ship, delta_time, player, player_on_pad)
 		end
 	end
 
@@ -174,7 +197,7 @@ function Aliens.update(delta_time, player)
 end
 
 -- Update fighter AI (engage/retreat pattern)
-function Aliens.update_fighter(fighter, delta_time, player)
+function Aliens.update_fighter(fighter, delta_time, player, player_on_pad)
 	-- Update AI state timer
 	fighter.ai_timer += delta_time
 
@@ -186,15 +209,16 @@ function Aliens.update_fighter(fighter, delta_time, player)
 
 	-- State machine: engage (get close and circle) or retreat (fly away)
 	if fighter.ai_state == "engage" then
-		-- Engage: fly to 80m and circle for 10 seconds
-		if fighter.ai_timer >= Aliens.FIGHTER_ENGAGE_TIME then
+		-- Engage: fly close and circle for randomized duration
+		if fighter.ai_timer >= fighter.ai_duration then
 			fighter.ai_state = "retreat"
 			fighter.ai_timer = 0
+			fighter.ai_duration = Aliens.FIGHTER_RETREAT_TIME + (rnd(2) - 1) * Aliens.FIGHTER_STATE_TIME_VARIANCE
 		end
 
 		local desired_dist = Aliens.FIGHTER_ENGAGE_DIST
 
-		if dist > desired_dist + 2 then
+		if dist > desired_dist + Aliens.FIGHTER_APPROACH_THRESHOLD then
 			-- Move toward player
 			local dir_x = dx / dist
 			local dir_y = dy / dist
@@ -203,12 +227,11 @@ function Aliens.update_fighter(fighter, delta_time, player)
 			fighter.vy = dir_y * Aliens.FIGHTER_SPEED
 			fighter.vz = dir_z * Aliens.FIGHTER_SPEED
 		else
-			-- Circle around player with small radius (1-2 units = 10-20m)
-			fighter.circle_angle += delta_time * 0.3  -- Rotation speed
-			local circle_radius = 1.5  -- 15 meters circle radius
-			local circle_x = player.x + cos(fighter.circle_angle) * circle_radius
-			local circle_z = player.z + sin(fighter.circle_angle) * circle_radius
-			local circle_y = player.y + 2
+			-- Circle around player
+			fighter.circle_angle += delta_time * Aliens.FIGHTER_CIRCLE_SPEED
+			local circle_x = player.x + cos(fighter.circle_angle) * Aliens.FIGHTER_CIRCLE_RADIUS
+			local circle_z = player.z + sin(fighter.circle_angle) * Aliens.FIGHTER_CIRCLE_RADIUS
+			local circle_y = player.y + Aliens.FIGHTER_CIRCLE_HEIGHT_OFFSET
 
 			local to_circle_x = circle_x - fighter.x
 			local to_circle_y = circle_y - fighter.y
@@ -223,15 +246,16 @@ function Aliens.update_fighter(fighter, delta_time, player)
 		end
 
 	elseif fighter.ai_state == "retreat" then
-		-- Retreat: fly to 200m and stay for 15 seconds
-		if fighter.ai_timer >= Aliens.FIGHTER_RETREAT_TIME then
+		-- Retreat: fly away and stay for randomized duration
+		if fighter.ai_timer >= fighter.ai_duration then
 			fighter.ai_state = "engage"
 			fighter.ai_timer = 0
+			fighter.ai_duration = Aliens.FIGHTER_ENGAGE_TIME + (rnd(2) - 1) * Aliens.FIGHTER_STATE_TIME_VARIANCE
 		end
 
 		local desired_dist = Aliens.FIGHTER_RETREAT_DIST
 
-		if dist < desired_dist - 2 then
+		if dist < desired_dist - Aliens.FIGHTER_APPROACH_THRESHOLD then
 			-- Move away from player
 			local dir_x = -dx / dist
 			local dir_y = -dy / dist
@@ -248,11 +272,10 @@ function Aliens.update_fighter(fighter, delta_time, player)
 	end
 
 	-- Stay above minimum altitude
-	local min_altitude = 10  -- 100 meters
-	if fighter.y < min_altitude then
-		fighter.vy = 0.5
-	elseif fighter.y > 30 then
-		fighter.vy = -0.2
+	if fighter.y < Aliens.FIGHTER_MIN_ALTITUDE then
+		fighter.vy = Aliens.FIGHTER_ALTITUDE_CLIMB_SPEED
+	elseif fighter.y > Aliens.FIGHTER_MAX_ALTITUDE then
+		fighter.vy = Aliens.FIGHTER_ALTITUDE_DESCEND_SPEED
 	end
 
 	-- Update position
@@ -269,29 +292,53 @@ function Aliens.update_fighter(fighter, delta_time, player)
 	while yaw_change > 0.5 do yaw_change -= 1 end
 	while yaw_change < -0.5 do yaw_change += 1 end
 
-	-- Bank based on turn rate (max 30 degrees = 0.083 turns)
-	local max_bank = 0.083
-	fighter.roll = -yaw_change * 10  -- Negative for correct banking direction
-	if fighter.roll > max_bank then fighter.roll = max_bank end
-	if fighter.roll < -max_bank then fighter.roll = -max_bank end
+	-- Bank based on turn rate
+	fighter.roll = -yaw_change * Aliens.FIGHTER_BANK_MULTIPLIER
+	if fighter.roll > Aliens.FIGHTER_MAX_BANK then fighter.roll = Aliens.FIGHTER_MAX_BANK end
+	if fighter.roll < -Aliens.FIGHTER_MAX_BANK then fighter.roll = -Aliens.FIGHTER_MAX_BANK end
 
 	-- Smooth roll back to level when not turning much
 	if abs(yaw_change) < 0.01 then
-		fighter.roll = fighter.roll * 0.9  -- Dampen roll
+		fighter.roll = fighter.roll * Aliens.FIGHTER_BANK_DAMPING
 	end
 
 	fighter.prev_yaw = fighter.yaw
 	fighter.yaw = new_yaw
 
-	-- Update fire timer
+	-- Update fire timer and shoot at player
 	fighter.fire_timer += delta_time
+
+	-- Fire at player when engaged and within range (but not when player is on landing pad)
+	if not player_on_pad and fighter.ai_state == "engage" and dist <= Aliens.FIGHTER_FIRE_RANGE then
+		if fighter.fire_timer >= (1 / Aliens.FIGHTER_FIRE_RATE) then
+			-- Calculate direction to player
+			local to_player_x = dx / dist
+			local to_player_y = dy / dist
+			local to_player_z = dz / dist
+
+			-- Spawn bullet via callback
+			if Aliens.spawn_bullet then
+				Aliens.spawn_bullet(
+					fighter.x, fighter.y, fighter.z,
+					to_player_x, to_player_y, to_player_z,
+					Aliens.FIGHTER_FIRE_RANGE
+				)
+			end
+			fighter.fire_timer = 0
+		end
+	end
 end
 
 -- Update mother ship
-function Aliens.update_mother_ship(mother, delta_time, player)
-	-- Hover in place, slowly descending
-	if mother.y > player.y + 10 then
-		mother.vy = -0.1
+function Aliens.update_mother_ship(mother, delta_time, player, player_on_pad)
+	-- Hover above player, but cap at maximum height (200m)
+	local target_height = player.y + Aliens.MOTHER_SHIP_HOVER_HEIGHT
+	if target_height > Aliens.MOTHER_SHIP_MAX_HEIGHT then
+		target_height = Aliens.MOTHER_SHIP_MAX_HEIGHT
+	end
+
+	if mother.y > target_height then
+		mother.vy = Aliens.MOTHER_SHIP_DESCEND_SPEED
 		mother.y += mother.vy * delta_time * 60
 	else
 		mother.vy = 0
@@ -300,9 +347,50 @@ function Aliens.update_mother_ship(mother, delta_time, player)
 	-- Rotate slowly
 	mother.yaw += delta_time * 0.2
 
-	-- Update fire timer and pattern angle
+	-- Update fire timer
 	mother.fire_timer += delta_time
-	mother.fire_angle += delta_time * 2  -- Rotate bullet pattern
+
+	-- Bottom turret: shoots two bullets at a time at player
+	-- Check if player is below mothership (downward firing arc)
+	local dx = player.x - mother.x
+	local dy = player.y - mother.y
+	local dz = player.z - mother.z
+	local dist = sqrt(dx*dx + dy*dy + dz*dz)
+
+	if not player_on_pad and dist <= Aliens.MOTHER_SHIP_FIRE_RANGE then
+		-- Calculate direction to player
+		local to_player_x = dx / dist
+		local to_player_y = dy / dist
+		local to_player_z = dz / dist
+
+		-- Mothership's down vector (always pointing down in world space)
+		local mother_down_x = 0
+		local mother_down_y = -1
+		local mother_down_z = 0
+
+		-- Check firing constraints (player must be below mothership)
+		local dot = to_player_x * mother_down_x + to_player_y * mother_down_y + to_player_z * mother_down_z
+
+		if dot > 0 and mother.fire_timer >= (1 / Aliens.MOTHER_SHIP_FIRE_RATE) then
+			-- Shoot two bullets with slight spread
+			if Aliens.spawn_bullet then
+				-- Bullet 1: slightly left
+				local spread = 0.1
+				Aliens.spawn_bullet(
+					mother.x - spread, mother.y, mother.z,
+					to_player_x, to_player_y, to_player_z,
+					Aliens.MOTHER_SHIP_FIRE_RANGE
+				)
+				-- Bullet 2: slightly right
+				Aliens.spawn_bullet(
+					mother.x + spread, mother.y, mother.z,
+					to_player_x, to_player_y, to_player_z,
+					Aliens.MOTHER_SHIP_FIRE_RANGE
+				)
+			end
+			mother.fire_timer = 0
+		end
+	end
 end
 
 -- Check if fighter can fire at player

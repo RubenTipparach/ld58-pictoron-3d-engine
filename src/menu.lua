@@ -197,7 +197,8 @@ function Menu.init()
 		}
 	else
 		Menu.mission_progress = {
-			mission_1 = true,  -- Mission 1 always unlocked
+			story_played = false,  -- Track if story (Mission 0) has been played
+			mission_1 = true,   -- Always unlocked (engine test)
 			mission_2 = false,  -- Unlocks after Mission 1
 			mission_3 = false,  -- Unlocks after Mission 2
 			mission_4 = false,  -- Unlocks after Mission 3
@@ -208,7 +209,8 @@ function Menu.init()
 		-- Try to load from Picotron storage using fetch()
 		local loaded_progress = fetch("/appdata/mission_progress.pod")
 		if loaded_progress then
-			Menu.mission_progress.mission_1 = loaded_progress.mission_1 or true  -- Mission 1 always unlocked
+			Menu.mission_progress.story_played = loaded_progress.story_played or false
+			Menu.mission_progress.mission_1 = true  -- Always unlocked
 			Menu.mission_progress.mission_2 = loaded_progress.mission_2 or false
 			Menu.mission_progress.mission_3 = loaded_progress.mission_3 or false
 			Menu.mission_progress.mission_4 = loaded_progress.mission_4 or false
@@ -324,6 +326,9 @@ end
 -- Update menu options based on unlocked missions
 function Menu.update_options()
 	Menu.options = {}
+
+	-- Mission 0: Story (always unlocked, comes first)
+	add(Menu.options, {text = "MISSION 0: TOM LANDER", action = "story", locked = false})
 
 	-- Mission 1
 	if Menu.mission_progress.mission_1 then
@@ -489,6 +494,9 @@ function Menu.select_option()
 		Menu.show_mode_select = true
 		Menu.show_options = false
 		Menu.selected_mode = 1  -- Default to Arcade
+	elseif option.action == "story" then
+		-- Start story cutscene
+		return "story"
 	elseif option.action == "reset" then
 		-- Reset progress
 		Menu.reset_progress()

@@ -10,8 +10,8 @@ end
 Bullets.MAX_BULLETS = 100  -- Total bullet budget
 Bullets.PLAYER_SPRITE = 25
 Bullets.ENEMY_SPRITE = 26
-Bullets.PLAYER_BULLET_SPEED = 10  -- Units per second
-Bullets.ENEMY_BULLET_SPEED = 4  -- Units per second
+Bullets.PLAYER_BULLET_SPEED = 20  -- Units per second
+Bullets.ENEMY_BULLET_SPEED = 12  -- Units per second
 Bullets.BULLET_SIZE = 0.2  -- Billboard size
 Bullets.BULLET_RANGE = 100  -- 200 meters max range
 Bullets.PLAYER_FIRE_RATE = 1  -- Bullets per second (0 = disabled)

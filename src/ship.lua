@@ -236,6 +236,7 @@ function Ship:take_damage(amount)
 	if self.health < 50 then
 		self.is_damaged = true
 	end
+	sfx(8)  -- Play damage sound
 end
 
 return Ship

@@ -1,7 +1,7 @@
 -- PARAMETERS (EASY TO ADJUST!)
 
 -- Mission testing
-local mission_testing = true  -- If true, all missions are unlocked
+local mission_testing = false  -- If true, all missions are unlocked
 
 -- Game mode
 local game_mode = "arcade"  -- "arcade" or "simulation"
@@ -62,6 +62,7 @@ local Menu = include("src/menu.lua")
 local Aliens = include("src/aliens.lua")
 local Bullets = include("src/bullets.lua")
 local Turret = include("src/turret.lua")
+local Cutscene = include("src/cutscene.lua")
 
 -- Set shared module references
 Mission.LandingPads = LandingPads
@@ -130,16 +131,16 @@ local CARGO_DAMPING_PENALTY = 1 -- Damping multiplier when cargo attached (low d
 local CARGO_ANGULAR_DAMPING_PENALTY = 1.1  -- Angular damping multiplier when cargo attached
 
 -- Damage Configuration
-local DAMAGE_BUILDING_THRESHOLD = 0.1  -- Minimum speed for building collision damage
+local DAMAGE_BUILDING_THRESHOLD = 0.05  -- Minimum speed for building collision damage
 local DAMAGE_GROUND_THRESHOLD = -0.05  -- Minimum vertical velocity for ground impact damage
-local DAMAGE_BUILDING_MULTIPLIER = 50  -- Damage multiplier for building collisions
-local DAMAGE_GROUND_MULTIPLIER = 400   -- Damage multiplier for ground impacts
+local DAMAGE_BUILDING_MULTIPLIER = 100  -- Damage multiplier for building collisions
+local DAMAGE_GROUND_MULTIPLIER = 300   -- Damage multiplier for ground impacts
 
 -- Rendering Configuration
 local RENDER_DISTANCE = 15  -- Far plane / fog distance
 local FOG_START_DISTANCE = 10  -- Distance where fog/fade begins (3m before render distance)
-local WEATHER_RENDER_DISTANCE = 12  -- Reduced render distance in weather
-local WEATHER_FOG_START_DISTANCE = 8  -- Fog starts closer in weather
+local WEATHER_RENDER_DISTANCE = 10  -- Reduced render distance in weather
+local WEATHER_FOG_START_DISTANCE = 5  -- Fog starts closer in weather
 local DEBUG_SHOW_PHYSICS_WIREFRAME = false  -- Toggle physics collision wireframes
 local GROUND_ALWAYS_BEHIND = false  -- Force ground to render behind everything (depth bias)
 
@@ -572,6 +573,7 @@ Aliens.on_fighter_destroyed = function(x, y, z)
 		max_time = 1.0,  -- Long explosion
 		max_radius = 20  -- Large radius
 	})
+	sfx(3)  -- Play destruction sound
 end
 
 Aliens.on_mothership_destroyed = function(x, y, z)
@@ -600,6 +602,12 @@ Aliens.on_mothership_destroyed = function(x, y, z)
 			color = 12  -- Blue
 		})
 	end
+	sfx(3)  -- Play destruction sound
+end
+
+-- Set alien bullet spawn callback
+Aliens.spawn_bullet = function(x, y, z, dir_x, dir_y, dir_z, max_range)
+	Bullets.spawn_enemy_bullet(x, y, z, dir_x, dir_y, dir_z, max_range)
 end
 
 local function add_explosion(ship)
@@ -782,7 +790,7 @@ local function start_mission(mission_num, mode)
 
 	-- Start first wave only for Mission 6
 	if mission_num == 6 then
-		Aliens.start_next_wave(vtol)
+		Aliens.start_next_wave(vtol, LandingPads)
 	end
 
 	Menu.active = false
@@ -797,7 +805,7 @@ end
 -- draw_collision_wireframe is now in Collision module
 
 -- Wrapper for render_mesh to track culling stats and use Renderer module
-local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, fog_start_distance)
+local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, fog_start_distance, is_skybox)
 	-- Use provided render distance or default
 	local effective_render_distance = render_distance or RENDER_DISTANCE
 	-- Use provided fog start distance or default
@@ -824,7 +832,8 @@ local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_ov
 		rot_pitch, rot_yaw, rot_roll,
 		effective_render_distance,
 		GROUND_ALWAYS_BEHIND,
-		effective_fog_distance
+		effective_fog_distance,
+		is_skybox
 	)
 end
 
@@ -838,11 +847,30 @@ function _update()
 	delta_time = current_time - last_time
 	last_time = current_time
 
+	-- Handle cutscene
+	if Cutscene.active then
+		Cutscene.update(delta_time)
+		if Cutscene.check_input() then
+			-- Cutscene finished, mark story as played and unlock Mission 1
+			Menu.mission_progress.story_played = true
+			Menu.mission_progress.mission_1 = true
+			store("/appdata/mission_progress.pod", Menu.mission_progress)
+
+			-- Return to menu
+			Menu.active = true
+		end
+		return  -- Don't update game while in cutscene
+	end
+
 	-- Handle menu updates
 	if Menu.active then
 		local action, mission_num, mode = Menu.update(delta_time)
 		if action == "start_mission" and mission_num then
 			start_mission(mission_num, mode)
+		elseif action == "story" then
+			-- Start story cutscene
+			Menu.active = false
+			Cutscene.start(1)
 		end
 		return  -- Don't update game while in menu
 	end
@@ -912,6 +940,7 @@ function _update()
 	if vtol.health <= 0 and current_game_state == GAME_STATE.PLAYING then
 		current_game_state = GAME_STATE.DYING
 		death_explosion_timer = 0
+		sfx(3)  -- Play destruction sound
 	end
 
 	-- Handle dying state (continuous explosions)
@@ -936,10 +965,15 @@ function _update()
 	if current_game_state == GAME_STATE.DEAD then
 		death_timer += delta_time
 
-		-- Check for restart input (any key or mouse click) after delay
+		-- Check for any key input to return to menu after delay
 		if DeathScreen.can_restart(death_timer) then
-			if key("x") or key("z") or key("space") or key("return") then
-				reset_game()
+			-- Check for any key press (space, enter, x, z, escape, or any letter/number)
+			if key("space") or key("return") or key("x") or key("z") or key("escape") or
+			   key("a") or key("b") or key("c") or key("d") or key("e") or key("f") or
+			   key("w") or key("s") then
+				Menu.active = true
+				current_game_state = GAME_STATE.PLAYING
+				death_timer = 0
 			end
 		end
 
@@ -1072,14 +1106,40 @@ function _update()
 		end
 	end
 
-	-- Height limit (400m ceiling) - disable thrusters if too high
-	local max_height = 40  -- 400 meters (1 unit = 10 meters)
+	-- Height limit (500m ceiling) - disable thrusters if too high
+	local max_height = 50  -- 500 meters (1 unit = 10 meters)
 	if vtol.y >= max_height then
 		-- Shut off all thrusters above ceiling
 		vtol.thrusters[1].active = false
 		vtol.thrusters[2].active = false
 		vtol.thrusters[3].active = false
 		vtol.thrusters[4].active = false
+	end
+
+	-- Count active thrusters for sound volume
+	local active_thruster_count = 0
+	for i, thruster in ipairs(vtol.thrusters) do
+		if thruster.active then
+			active_thruster_count += 1
+		end
+	end
+
+	-- Play thruster sound if any thrusters are firing
+	local thruster_channel = 0  -- Dedicated channel for thruster sound
+	if active_thruster_count > 0 then
+		-- Volume scales with number of active thrusters (0.25 to 1.0)
+		local volume = 0.25 + (active_thruster_count / 4) * 0.75
+
+		-- Check if sound is already playing on this channel
+		local is_playing = (stat(464) & (1 << thruster_channel)) != 0
+
+		if not is_playing then
+			-- Start looping thruster sound
+			sfx(1, thruster_channel, 0, -1, volume)  -- -1 length for infinite loop
+		end
+	else
+		-- Stop thruster sound when no thrusters active
+		sfx(-1, thruster_channel)
 	end
 
 	-- Precompute trig values (shared across all thrusters)
@@ -1145,8 +1205,8 @@ function _update()
 	vtol.y += vtol.vy
 	vtol.z += vtol.vz
 
-	-- Hard ceiling at 400m (40 world units)
-	local max_height = 40  -- 400 meters
+	-- Hard ceiling at 500m (50 world units)
+	local max_height = 50  -- 500 meters
 	if vtol.y > max_height then
 		vtol.y = max_height  -- Clamp to ceiling
 		if vtol.vy > 0 then
@@ -1338,6 +1398,7 @@ function _update()
 
 			-- Spawn explosion effect at random engine
 			add_explosion(vtol)
+			sfx(8)  -- Play damage sound for ground collision
 		end
 
 		vtol.y = landing_height
@@ -1518,7 +1579,7 @@ function _update()
 
 	-- Update combat systems (ONLY FOR MISSION 6)
 	if Mission.current_mission_num == 6 then
-		Aliens.update(delta_time, vtol)
+		Aliens.update(delta_time, vtol, is_on_landing_pad)
 		Bullets.update(delta_time)
 	end
 
@@ -1558,8 +1619,8 @@ function _update()
 		Turret.update(delta_time, vtol, Aliens.get_all())
 	end
 
-	-- Turret auto-fire (only if can fire) (ONLY FOR MISSION 6)
-	if Mission.current_mission_num == 6 and Turret.target and Turret.can_fire() then
+	-- Turret auto-fire (only if can fire and not on landing pad) (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 and not is_on_landing_pad and Turret.target and Turret.can_fire() then
 		local dir_x, dir_y, dir_z = Turret.get_fire_direction(vtol)
 		if dir_x then
 			-- Fire from turret position
@@ -1569,6 +1630,7 @@ function _update()
 				dir_x, dir_y, dir_z,
 				Turret.FIRE_RANGE
 			)
+			sfx(0)  -- Play shooting sound
 		end
 	end
 
@@ -1651,7 +1713,7 @@ function _update()
 
 			-- Wave progression
 		if Aliens.wave_complete then
-			if not Aliens.start_next_wave(vtol) then
+			if not Aliens.start_next_wave(vtol, LandingPads) then
 				-- All waves complete - mission 6 complete!
 				-- Only complete if mother ship was actually destroyed AND 5 seconds have passed
 				if Aliens.mother_ship_destroyed and Aliens.mother_ship_destroyed_time then
@@ -1684,6 +1746,12 @@ function _update()
 end
 
 function _draw()
+	-- Handle cutscene rendering
+	if Cutscene.active then
+		Cutscene.draw()
+		return
+	end
+
 	-- Handle menu rendering
 	if Menu.active then
 		Menu.draw(camera, render_mesh)
@@ -1715,7 +1783,8 @@ function _draw()
 	local skybox_sorted
 	if Mission.current_mission_num == 6 then
 		-- Mission 6: use special dome skybox with sprite 29 (64x32)
-		skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true)
+		-- is_ground=true, is_skybox=true for special pitch-independent culling
+		skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true, nil, nil, nil, nil, nil, true)
 	else
 		-- Other missions: use regular skybox
 		local skybox_sprite = nil
@@ -1723,7 +1792,7 @@ function _draw()
 			-- Mission 5: use cloudy sky (sprite 23)
 			skybox_sprite = 23
 		end
-		skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true)
+		skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true, nil, nil, nil, nil, nil, true)
 	end
 
 	for _, f in ipairs(skybox_sorted) do
