@@ -118,6 +118,26 @@ function Quat.conjugate(q)
 	return {w=q.w, x=-q.x, y=-q.y, z=-q.z}
 end
 
+-- Create quaternion from look-at direction vector (converts normalized direction to rotation)
+function Quat.look_at(dir_x, dir_y, dir_z)
+	-- Normalize direction vector
+	local mag = sqrt(dir_x*dir_x + dir_y*dir_y + dir_z*dir_z)
+	if mag < 0.0001 then
+		return Quat.new()  -- Identity quaternion if no direction
+	end
+	dir_x, dir_y, dir_z = dir_x/mag, dir_y/mag, dir_z/mag
+
+	-- Calculate yaw (rotation around Y axis)
+	local yaw = atan2(dir_x, dir_z)
+
+	-- Calculate pitch (rotation around X axis)
+	local horizontal_dist = sqrt(dir_x*dir_x + dir_z*dir_z)
+	local pitch = -atan2(dir_y, horizontal_dist)
+
+	-- Convert to quaternion (yaw, pitch, no roll)
+	return Quat.from_euler(yaw, pitch, 0)
+end
+
 -- Turret mount configuration (EASY TO ADJUST!)
 Turret.MOUNT_OFFSET_X = 0    -- X offset from ship center when mounted
 Turret.MOUNT_OFFSET_Y = 0.3  -- Y offset (positive = above ship, along up vector)
@@ -202,6 +222,16 @@ function Turret.find_target(ship, enemies)
 	return best_target
 end
 
+-- Check if target is within firing constraints using dot product
+-- Returns: can_fire (bool)
+function Turret.check_firing_constraints(ship_to_enemy_x, ship_to_enemy_y, ship_to_enemy_z, ship_up_x, ship_up_y, ship_up_z)
+	-- Dot product: ship up vector vs enemy direction
+	local dot = ship_to_enemy_x * ship_up_x + ship_to_enemy_y * ship_up_y + ship_to_enemy_z * ship_up_z
+
+	-- If dot product is negative, enemy is below ship
+	return dot > 0
+end
+
 -- Update turret (find target and rotate toward it using quaternions)
 function Turret.update(delta_time, ship, enemies)
 	-- Find target
@@ -212,62 +242,57 @@ function Turret.update(delta_time, ship, enemies)
 
 	local target_quat
 	if Turret.target then
-		-- Calculate direction to target (in world space)
-		local dx = Turret.target.x - turret_x
-		local dy = Turret.target.y - turret_y
-		local dz = Turret.target.z - turret_z
-
-		-- Target yaw and pitch (in absolute world space - independent of ship)
-		local target_yaw = atan2(dx, dz)
-		local horizontal_dist = sqrt(dx*dx + dz*dz)
-		local target_pitch = -atan2(dy, horizontal_dist)
-
-		-- Check if target is within firing arc (relative to ship's forward direction)
-		local yaw_relative = target_yaw - ship.yaw
-		-- Normalize to -0.5 to 0.5 range
-		while yaw_relative > 0.5 do yaw_relative -= 1 end
-		while yaw_relative < -0.5 do yaw_relative += 1 end
-
-		-- Clamp to firing arc if needed
-		local clamped_yaw = target_yaw
-		if abs(yaw_relative) > Turret.MAX_YAW then
-			-- Outside firing arc - clamp to edge of arc
-			if yaw_relative > 0 then
-				clamped_yaw = ship.yaw + Turret.MAX_YAW
-			else
-				clamped_yaw = ship.yaw - Turret.MAX_YAW
-			end
+		-- Ship to enemy vector (normalized)
+		local dx = Turret.target.x - ship.x
+		local dy = Turret.target.y - ship.y
+		local dz = Turret.target.z - ship.z
+		local mag = sqrt(dx*dx + dy*dy + dz*dz)
+		if mag > 0.0001 then
+			dx, dy, dz = dx/mag, dy/mag, dz/mag
 		end
 
-		-- Clamp pitch to max pitch constraint (relative to horizontal)
-		local clamped_pitch = target_pitch
-		if clamped_pitch > Turret.MAX_PITCH then
-			clamped_pitch = Turret.MAX_PITCH
-		elseif clamped_pitch < -Turret.MAX_PITCH then
-			clamped_pitch = -Turret.MAX_PITCH
-		end
+		-- Ship up vector (for hemisphere check)
+		local up_x = 0
+		local up_y = 1
+		local up_z = 0
 
-		-- Create target quaternion in world space (no ship rotation influence)
-		target_quat = Quat.from_euler(clamped_yaw, clamped_pitch, 0)
+		-- Check if enemy is in upper hemisphere of ship using dot product
+		Turret.can_fire_now = Turret.check_firing_constraints(dx, dy, dz, up_x, up_y, up_z)
+
+		if Turret.can_fire_now then
+			-- Enemy in upper hemisphere - aim at target
+			local tdx = Turret.target.x - turret_x
+			local tdy = Turret.target.y - turret_y
+			local tdz = Turret.target.z - turret_z
+			target_quat = Quat.look_at(tdx, tdy, tdz)
+		else
+			-- Enemy below - point turret up (ship's up vector)
+			target_quat = Quat.look_at(up_x, up_y, up_z)
+		end
 	else
-		-- Return to forward position (match ship orientation - pitch, yaw, and roll)
-		target_quat = Quat.from_euler(ship.yaw, ship.pitch, ship.roll)
+		-- No target - point turret up (ship's up vector)
+		local up_x = 0
+		local up_y = 1
+		local up_z = 0
+		target_quat = Quat.look_at(up_x, up_y, up_z)
+		Turret.can_fire_now = false
 	end
 
 	-- Slerp toward target orientation
-	Turret.orientation = Quat.slerp(Turret.orientation, target_quat, Turret.ROTATION_SPEED)
-	Turret.orientation = Quat.normalize(Turret.orientation)
+	--Turret.orientation = Quat.slerp(Turret.orientation, target_quat, Turret.ROTATION_SPEED)
+	--Turret.orientation = Quat.normalize(Turret.orientation)
+		-- local dx = Turret.target.x - turret_x
+		-- local dy = Turret.target.y - turret_y
+		-- local dz = Turret.target.z - turret_z
+		-- target_quat = Quat.look_at(dx, dy, dz)
+	--target_quat = Quat.from_euler(ship.yaw, ship.pitch, ship.roll)
+
+	Turret.orientation = target_quat
 end
 
--- Check if turret can fire (aligned with target)
+-- Check if turret can fire (target within firing arc)
 function Turret.can_fire()
-	if not Turret.target then
-		return false
-	end
-
-	-- Check if turret is roughly aligned (within 5 degrees)
-	-- This is checked in the main update loop
-	return true
+	return Turret.can_fire_now or false
 end
 
 -- Get firing direction (toward target)

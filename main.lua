@@ -65,7 +65,6 @@ local Turret = include("src/turret.lua")
 
 -- Set shared module references
 Mission.LandingPads = LandingPads
-
 -- Import sprite constants for easy reference
 local SPRITE_CUBE = Constants.SPRITE_CUBE
 local SPRITE_SPHERE = Constants.SPRITE_SPHERE
@@ -226,6 +225,39 @@ for i = 0, 5 do
 	local u_start = i * 32 / 6
 	local u_end = (i + 1) * 32 / 6
 	add(skybox_faces, {b1, b2, top, SPRITE_SKYBOX, vec(u_start, 32), vec(u_end, 32), vec((u_start+u_end)/2, 0)})
+end
+
+-- Mission 6 Skybox: Similar structure to standard skybox but larger
+local m6_skybox_radius = 80
+local m6_skybox_height = 50
+local m6_skybox_verts = {}
+local m6_skybox_faces = {}
+
+-- Bottom ring (16 vertices at y=0 for smoother circle)
+for i = 0, 15 do
+	local angle = i / 16
+	add(m6_skybox_verts, vec(
+		cos(angle) * m6_skybox_radius,
+		0,
+		sin(angle) * m6_skybox_radius
+	))
+end
+
+-- Top vertex
+add(m6_skybox_verts, vec(0, m6_skybox_height, 0))  -- Vertex 17
+
+-- Create triangular faces from bottom ring to top (sprite 29 is 64x32)
+for i = 0, 15 do
+	local b1 = i + 1                  -- Bottom ring vertex
+	local b2 = (i + 1) % 16 + 1       -- Next bottom vertex (wrap around)
+	local top = 17                     -- Top vertex
+
+	-- UV coordinates wrap the 64px width around the 16 segments
+	local u_start = (i / 16) * 64
+	local u_end = ((i + 1) / 16) * 64
+
+	-- Triangle from bottom edge to top
+	add(m6_skybox_faces, {b1, b2, top, 29, vec(u_start, 32), vec(u_end, 32), vec((u_start+u_end)/2, 0)})
 end
 
 -- Ground plane generation now uses heightmap system
@@ -404,21 +436,23 @@ end
 local ufo_fighter_mesh = load_obj("ufo_fighter.obj")
 local ufo_mother_mesh = load_obj("ufo_mother.obj")
 
--- Set sprite for UFO meshes (32x32 texture)
+-- Set sprite for UFO meshes and scale UVs from 16x16 baseline
 if ufo_fighter_mesh then
 	for _, face in ipairs(ufo_fighter_mesh.faces) do
 		face[4] = 28  -- Fighter sprite (32x32)
-		-- UVs should be normalized (0-1 range) - don't scale them
-		-- The sprite size is 32x32 but UVs are already correct from OBJ
+		-- OBJ loader outputs 16x16 UVs, scale by 2 for 32x32 sprite
+		if face[5] then face[5] = vec(face[5].x * 2, face[5].y * 2) end
+		if face[6] then face[6] = vec(face[6].x * 2, face[6].y * 2) end
+		if face[7] then face[7] = vec(face[7].x * 2, face[7].y * 2) end
 	end
 end
 if ufo_mother_mesh then
 	for _, face in ipairs(ufo_mother_mesh.faces) do
-		face[4] = 27  -- Mother ship sprite
-		-- Scale UVs to 128x128 (mothership uses larger texture)
-		if face[5] then face[5] = vec(face[5].x * 128, face[5].y * 128) end
-		if face[6] then face[6] = vec(face[6].x * 128, face[6].y * 128) end
-		if face[7] then face[7] = vec(face[7].x * 128, face[7].y * 128) end
+		face[4] = 27  -- Mother ship sprite (128x128)
+		-- OBJ loader outputs 16x16 UVs, scale by 8 for 128x128 sprite
+		if face[5] then face[5] = vec(face[5].x * 8, face[5].y * 8) end
+		if face[6] then face[6] = vec(face[6].x * 8, face[6].y * 8) end
+		if face[7] then face[7] = vec(face[7].x * 8, face[7].y * 8) end
 	end
 end
 
@@ -525,6 +559,48 @@ local vert_data_pool = userdata("f64", 6, 3)
 
 -- Explosion effects (visual only)
 local explosions = {}
+
+-- Line particles for mother ship explosion
+local line_particles = {}
+
+-- Set alien explosion callbacks (must be after arrays are initialized)
+Aliens.on_fighter_destroyed = function(x, y, z)
+	-- Big explosion for fighter
+	add(explosions, {
+		x = x, y = y, z = z,
+		time = 0,
+		max_time = 1.0,  -- Long explosion
+		max_radius = 20  -- Large radius
+	})
+end
+
+Aliens.on_mothership_destroyed = function(x, y, z)
+	-- Huge blue explosion for mother ship
+	add(explosions, {
+		x = x, y = y, z = z,
+		time = 0,
+		max_time = 2.0,  -- Very long explosion
+		max_radius = 40,  -- Huge radius
+		color = 12  -- Blue color
+	})
+
+	-- Spawn 30 line particles flying outward
+	for i = 1, 30 do
+		local angle_h = rnd(1)  -- Random horizontal angle
+		local angle_v = rnd(0.5) - 0.25  -- Random vertical angle
+		local speed = 5 + rnd(10)  -- Random speed 5-15 units/sec
+
+		add(line_particles, {
+			x = x, y = y, z = z,
+			vx = cos(angle_h) * cos(angle_v) * speed,
+			vy = sin(angle_v) * speed,
+			vz = sin(angle_h) * cos(angle_v) * speed,
+			time = 0,
+			max_time = 2.0,  -- Live for 2 seconds
+			color = 12  -- Blue
+		})
+	end
+end
 
 local function add_explosion(ship)
 	-- Pick a random engine position for the explosion
@@ -1361,6 +1437,20 @@ function _update()
 		end
 	end
 
+	-- Update line particles (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 then
+		for i = #line_particles, 1, -1 do
+			local p = line_particles[i]
+			p.time += delta_time
+			p.x += p.vx * delta_time
+			p.y += p.vy * delta_time
+			p.z += p.vz * delta_time
+			if p.time >= p.max_time then
+				deli(line_particles, i)
+			end
+		end
+	end
+
 	-- Update smoke particle system
 	smoke_system:update(delta_time)
 
@@ -1426,12 +1516,15 @@ function _update()
 	Weather.update(delta_time, camera, vtol.y)
 	Weather.apply_wind(vtol, vtol.y, is_on_landing_pad)
 
-	-- Update combat systems
-	Aliens.update(delta_time, vtol)
-	Bullets.update(delta_time)
+	-- Update combat systems (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 then
+		Aliens.update(delta_time, vtol)
+		Bullets.update(delta_time)
+	end
 
-	-- Check bullet-terrain/building collisions
-	for i = #Bullets.bullets, 1, -1 do
+	-- Check bullet-terrain/building collisions (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 then
+		for i = #Bullets.bullets, 1, -1 do
 		local bullet = Bullets.bullets[i]
 		if bullet.active then
 			-- Check terrain collision
@@ -1458,12 +1551,15 @@ function _update()
 				end
 			end
 		end
+		end
 	end
 
-	Turret.update(delta_time, vtol, Aliens.get_all())
+	if Mission.current_mission_num == 6 then
+		Turret.update(delta_time, vtol, Aliens.get_all())
+	end
 
-	-- Turret auto-fire
-	if Turret.target then
+	-- Turret auto-fire (only if can fire) (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 and Turret.target and Turret.can_fire() then
 		local dir_x, dir_y, dir_z = Turret.get_fire_direction(vtol)
 		if dir_x then
 			-- Fire from turret position
@@ -1476,8 +1572,9 @@ function _update()
 		end
 	end
 
-	-- Enemy firing (using Bullets.ENEMY_FIRE_RATE)
-	for fighter in all(Aliens.fighters) do
+	-- Enemy firing (using Bullets.ENEMY_FIRE_RATE) (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 then
+		for fighter in all(Aliens.fighters) do
 		if Aliens.can_fire_fighter(fighter, vtol) and fighter.fire_timer >= Bullets.ENEMY_FIRE_COOLDOWN then
 			fighter.fire_timer = 0
 			local dx = vtol.x - fighter.x
@@ -1490,9 +1587,9 @@ function _update()
 				Aliens.FIGHTER_FIRE_RANGE
 			)
 		end
-	end
+		end
 
-	-- Mother ship bullet hell (uses its own fire rate for bullet hell pattern)
+		-- Mother ship bullet hell (uses its own fire rate for bullet hell pattern)
 	if Aliens.mother_ship and Aliens.mother_ship.fire_timer >= 1 / Aliens.MOTHER_SHIP_FIRE_RATE then
 		Aliens.mother_ship.fire_timer = 0
 		-- Spiral pattern: 8 bullets in a circle
@@ -1507,9 +1604,9 @@ function _update()
 				Aliens.MOTHER_SHIP_FIRE_RANGE
 			)
 		end
-	end
+		end
 
-	-- Check bullet collisions with player
+		-- Check bullet collisions with player
 	local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
 	local player_bounds = {
 		left = vtol.x - ship_width/2,
@@ -1539,14 +1636,30 @@ function _update()
 		local alien_hits = Bullets.check_collision("enemy", alien_bounds)
 		for hit in all(alien_hits) do
 			alien.health -= 20  -- 20 damage per bullet (unchanged)
-		end
-	end
 
-	-- Wave progression
-	if Aliens.wave_complete then
-		if not Aliens.start_next_wave(vtol) then
-			-- All waves complete - could trigger mission complete
-			-- Mission.complete()
+			-- Add bullet hit explosion effect at bullet position
+			add(explosions, {
+				x = hit.x,
+				y = hit.y,
+				z = hit.z,
+				time = 0,
+				max_time = 0.3,  -- Short burst
+				max_radius = 8   -- Small hit effect
+			})
+		end
+		end
+
+			-- Wave progression
+		if Aliens.wave_complete then
+			if not Aliens.start_next_wave(vtol) then
+				-- All waves complete - mission 6 complete!
+				-- Only complete if mother ship was actually destroyed AND 5 seconds have passed
+				if Aliens.mother_ship_destroyed and Aliens.mother_ship_destroyed_time then
+					if time() - Aliens.mother_ship_destroyed_time >= 5 then
+						Mission.complete()
+					end
+				end
+			end
 		end
 	end
 
@@ -1599,14 +1712,20 @@ function _draw()
 	local all_faces = {}
 
 	-- Render skybox (always at camera position, draws behind everything)
-	-- Use sprite 23 for Mission 5 (cloudy sky), flash brighter during lightning
-	local skybox_sprite = nil
-	if Weather.enabled then
-		-- Mission 5: use cloudy sky (sprite 23)
-		skybox_sprite = 23
-		-- TODO: could add a brighter sprite for lightning flashes
+	local skybox_sorted
+	if Mission.current_mission_num == 6 then
+		-- Mission 6: use special dome skybox with sprite 29 (64x32)
+		skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true)
+	else
+		-- Other missions: use regular skybox
+		local skybox_sprite = nil
+		if Weather.enabled then
+			-- Mission 5: use cloudy sky (sprite 23)
+			skybox_sprite = 23
+		end
+		skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true)
 	end
-	local skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true)  -- true = no distance culling
+
 	for _, f in ipairs(skybox_sorted) do
 		f.depth = 999999  -- Push skybox to back (always draws behind)
 		f.is_skybox = true  -- Mark as skybox to exclude from fog
@@ -1730,105 +1849,63 @@ function _draw()
 		add(all_faces, f)
 	end
 
-	-- Render bullets
-	local bullet_faces = Bullets.render(render_mesh, camera)
-	for _, f in ipairs(bullet_faces) do
-		add(all_faces, f)
-	end
+	-- Render bullets (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 then
+		local bullet_faces = Bullets.render(render_mesh, camera)
+		for _, f in ipairs(bullet_faces) do
+			add(all_faces, f)
+		end
 
-	-- Render aliens
-	for alien in all(Aliens.get_all()) do
-		local alien_mesh = alien.type == "fighter" and ufo_fighter_mesh or ufo_mother_mesh
-		if alien_mesh and alien_mesh.verts then
-			local alien_faces = render_mesh(
-				alien_mesh.verts,
-				alien_mesh.faces,
-				alien.x,
-				alien.y,
-				alien.z,
-				nil,
-				false,
-				0, alien.yaw, 0,
-				effective_render_distance,
-				effective_fog_start
-			)
-			for _, f in ipairs(alien_faces) do
-				add(all_faces, f)
+		-- Render aliens
+		for alien in all(Aliens.get_all()) do
+			local alien_mesh = alien.type == "fighter" and ufo_fighter_mesh or ufo_mother_mesh
+			if alien_mesh and alien_mesh.verts then
+				-- Extended render distance for aliens (fighters: 50 units = 500m, mother ship: 100 units = 1000m)
+				local alien_render_distance = alien.type == "mother" and 100 or 50
+				local alien_faces = render_mesh(
+					alien_mesh.verts,
+					alien_mesh.faces,
+					alien.x,
+					alien.y,
+					alien.z,
+					nil,
+					false,
+					0, alien.yaw, alien.roll or 0,  -- Add roll for banking
+					alien_render_distance,
+					effective_fog_start
+				)
+				for _, f in ipairs(alien_faces) do
+					add(all_faces, f)
+				end
 			end
 		end
 	end
 
-	-- Render turret (attached to ship, using proper mount position and quaternion rotation)
-	local turret_x, turret_y, turret_z = Turret.get_position(vtol.x, vtol.y, vtol.z, vtol.pitch, vtol.yaw, vtol.roll)
-	local turret_pitch, turret_yaw, turret_roll = Turret.get_euler_angles()
-	local turret_faces = render_mesh(
-		Turret.verts,
-		Turret.faces,
-		turret_x,
-		turret_y,
-		turret_z,
-		nil,
-		false,
-		turret_pitch, turret_yaw, turret_roll,
-		effective_render_distance,
-		effective_fog_start
-	)
-	for _, f in ipairs(turret_faces) do
-		f.is_vtol = true  -- Mark turret as VTOL-related
-		add(all_faces, f)
-	end
-
-	-- DEBUG: Draw 1x1x1 wireframe box around turret position
-	local box_size = 0.5
-	local debug_box_verts = {
-		{x=turret_x-box_size, y=turret_y-box_size, z=turret_z-box_size},
-		{x=turret_x+box_size, y=turret_y-box_size, z=turret_z-box_size},
-		{x=turret_x+box_size, y=turret_y+box_size, z=turret_z-box_size},
-		{x=turret_x-box_size, y=turret_y+box_size, z=turret_z-box_size},
-		{x=turret_x-box_size, y=turret_y-box_size, z=turret_z+box_size},
-		{x=turret_x+box_size, y=turret_y-box_size, z=turret_z+box_size},
-		{x=turret_x+box_size, y=turret_y+box_size, z=turret_z+box_size},
-		{x=turret_x-box_size, y=turret_y+box_size, z=turret_z+box_size}
-	}
-	-- Project and draw box edges
-	for i = 1, 8 do
-		local v = debug_box_verts[i]
-		local sx, sy, depth = Turret.project_3d_to_2d(v.x, v.y, v.z, camera)
-		if sx then
-			debug_box_verts[i].sx = sx
-			debug_box_verts[i].sy = sy
-		end
-	end
-	-- Draw wireframe edges (yellow)
-	local edges = {{1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},{1,5},{2,6},{3,7},{4,8}}
-	for edge in all(edges) do
-		local v1, v2 = debug_box_verts[edge[1]], debug_box_verts[edge[2]]
-		if v1.sx and v2.sx then
-			line(v1.sx, v1.sy, v2.sx, v2.sy, 10)  -- Yellow
+	-- Render turret (attached to ship, using proper mount position and quaternion rotation) (ONLY FOR MISSION 6)
+	local turret_x, turret_y, turret_z
+	if Mission.current_mission_num == 6 then
+		turret_x, turret_y, turret_z = Turret.get_position(vtol.x, vtol.y, vtol.z, vtol.pitch, vtol.yaw, vtol.roll)
+		local turret_pitch, turret_yaw, turret_roll = Turret.get_euler_angles()
+		local turret_faces = render_mesh(
+			Turret.verts,
+			Turret.faces,
+			turret_x,
+			turret_y,
+			turret_z,
+			nil,
+			false,
+			turret_pitch, turret_yaw, turret_roll,
+			effective_render_distance,
+			effective_fog_start
+		)
+		for _, f in ipairs(turret_faces) do
+			f.is_vtol = true  -- Mark turret as VTOL-related
+			add(all_faces, f)
 		end
 	end
 
-	-- Draw laser beam from turret (100m = 10 units) - simple red line
-	if Turret.target then
-		local dir_x, dir_y, dir_z = Turret.get_fire_direction(vtol)
-		if dir_x then
-			local laser_length = 10  -- 100 meters
-
-			-- Calculate laser end point in world space
-			local laser_end_x = turret_x + dir_x * laser_length
-			local laser_end_y = turret_y + dir_y * laser_length
-			local laser_end_z = turret_z + dir_z * laser_length
-
-			-- Project both points to screen space
-			local start_sx, start_sy, start_depth = Turret.project_3d_to_2d(turret_x, turret_y, turret_z, camera)
-			local end_sx, end_sy, end_depth = Turret.project_3d_to_2d(laser_end_x, laser_end_y, laser_end_z, camera)
-
-			-- Draw line if both points are visible
-			if start_sx and end_sx and start_depth > 0 and end_depth > 0 then
-				line(start_sx, start_sy, end_sx, end_sy, 8)  -- Red laser (color 8)
-			end
-		end
-	end
+	-- DEBUG: Turret wireframe (disabled)
+	-- Uncomment to enable turret debug visualization
 
 	-- Calculate if ship should flash (critically damaged)
 	local health_percent = vtol.health / vtol.max_health
@@ -1922,6 +1999,57 @@ function _draw()
 
 	-- Draw all faces using Renderer module
 	Renderer.draw_faces(all_faces, false)
+
+	-- Draw laser beam from turret (100m = 10 units) - simple red line - ALWAYS IN FRONT (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 and Turret.target then
+		-- Check if target is within firing range
+		local dx = Turret.target.x - turret_x
+		local dy = Turret.target.y - turret_y
+		local dz = Turret.target.z - turret_z
+		local dist = sqrt(dx*dx + dy*dy + dz*dz)
+
+		if dist <= Turret.FIRE_RANGE then
+			local dir_x, dir_y, dir_z = Turret.get_fire_direction(vtol)
+			if dir_x then
+				local laser_length = 10  -- 100 meters
+
+				-- Calculate laser end point in world space
+				local laser_end_x = turret_x + dir_x * laser_length
+				local laser_end_y = turret_y + dir_y * laser_length
+				local laser_end_z = turret_z + dir_z * laser_length
+
+				-- Project both points to screen space
+				local start_sx, start_sy, start_depth = Turret.project_3d_to_2d(turret_x, turret_y, turret_z, camera)
+				local end_sx, end_sy, end_depth = Turret.project_3d_to_2d(laser_end_x, laser_end_y, laser_end_z, camera)
+
+				-- Draw line if both points are visible
+				if start_sx and end_sx and start_depth > 0 and end_depth > 0 then
+					line(start_sx, start_sy, end_sx, end_sy, 8)  -- Red laser (color 8)
+				end
+			end
+		end
+	end
+
+	-- Draw line particles (mother ship debris) - ALWAYS IN FRONT (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 then
+		for p in all(line_particles) do
+			-- Line particles are small debris lines flying outward
+			-- Draw as short lines from current position in direction of velocity
+			local line_length = 0.5  -- Length of debris line
+			local end_x = p.x + (p.vx / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
+			local end_y = p.y + (p.vy / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
+			local end_z = p.z + (p.vz / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
+
+			-- Project both points to screen space
+			local start_sx, start_sy, start_depth = Turret.project_3d_to_2d(p.x, p.y, p.z, camera)
+			local end_sx, end_sy, end_depth = Turret.project_3d_to_2d(end_x, end_y, end_z, camera)
+
+			-- Draw line if both points are visible
+			if start_sx and end_sx and start_depth > 0 and end_depth > 0 then
+				line(start_sx, start_sy, end_sx, end_sy, p.color or 12)  -- Blue debris
+			end
+		end
+	end
 
 	-- Health bar
 	local health_bar_x = 2
@@ -2118,6 +2246,47 @@ function _draw()
 				circfill(minimap_x, minimap_y, 1, enemy_color)
 			end
 		end
+	end
+
+	-- Draw target health bar and ship type (ONLY FOR MISSION 6) - above compass
+	if Mission.current_mission_num == 6 and Turret.target then
+		local target = Turret.target
+		local target_name = ""
+		local target_health = 0
+		local target_max_health = 1
+
+		-- Determine target type and health
+		if target == Aliens.mother_ship then
+			target_name = "MOTHER SHIP"
+			target_health = target.health
+			target_max_health = target.max_health
+		else
+			-- It's a fighter
+			target_name = "FIGHTER"
+			target_health = target.health
+			target_max_health = target.max_health
+		end
+
+		-- Position above compass (compass is at y=240)
+		local target_bar_x = 180
+		local target_bar_y = 205
+		local target_bar_width = 120
+		local target_bar_height = 8
+
+		-- Ship type label (red)
+		print(target_name, target_bar_x, target_bar_y - 10, 8)
+
+		-- Health bar background (dark)
+		rectfill(target_bar_x, target_bar_y, target_bar_x + target_bar_width, target_bar_y + target_bar_height, 1)
+
+		-- Health fill (always red for enemies)
+		local health_percent = target_health / target_max_health
+		local health_width = target_bar_width * max(0, health_percent)
+
+		rectfill(target_bar_x, target_bar_y, target_bar_x + health_width, target_bar_y + target_bar_height, 8)
+
+		-- Border (red)
+		rect(target_bar_x, target_bar_y, target_bar_x + target_bar_width, target_bar_y + target_bar_height, 8)
 	end
 
 	-- Draw 3D compass (cross/diamond shape with red and grey arrows)

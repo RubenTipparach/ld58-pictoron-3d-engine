@@ -10,8 +10,10 @@ end
 Bullets.MAX_BULLETS = 100  -- Total bullet budget
 Bullets.PLAYER_SPRITE = 25
 Bullets.ENEMY_SPRITE = 26
-Bullets.BULLET_SPEED = 5  -- Units per second (50 m/s - slow for dodging)
+Bullets.PLAYER_BULLET_SPEED = 10  -- Units per second
+Bullets.ENEMY_BULLET_SPEED = 4  -- Units per second
 Bullets.BULLET_SIZE = 0.2  -- Billboard size
+Bullets.BULLET_RANGE = 100  -- 200 meters max range
 Bullets.PLAYER_FIRE_RATE = 1  -- Bullets per second (0 = disabled)
 Bullets.PLAYER_FIRE_COOLDOWN = Bullets.PLAYER_FIRE_RATE > 0 and (1 / Bullets.PLAYER_FIRE_RATE) or 999999
 
@@ -23,8 +25,8 @@ Bullets.ENEMY_FIRE_COOLDOWN = Bullets.ENEMY_FIRE_RATE > 0 and (1 / Bullets.ENEMY
 Bullets.bullets = {}
 Bullets.player_fire_timer = 0
 
--- Spawn a bullet
-function Bullets.spawn(x, y, z, dir_x, dir_y, dir_z, sprite, owner, max_range)
+-- Spawn a bullet (internal function)
+function Bullets.spawn(x, y, z, dir_x, dir_y, dir_z, sprite, owner, max_range, speed)
 	-- Check bullet budget
 	if #Bullets.bullets >= Bullets.MAX_BULLETS then
 		return nil
@@ -34,15 +36,15 @@ function Bullets.spawn(x, y, z, dir_x, dir_y, dir_z, sprite, owner, max_range)
 		x = x,
 		y = y,
 		z = z,
-		vx = dir_x * Bullets.BULLET_SPEED,
-		vy = dir_y * Bullets.BULLET_SPEED,
-		vz = dir_z * Bullets.BULLET_SPEED,
+		vx = dir_x * speed,
+		vy = dir_y * speed,
+		vz = dir_z * speed,
 		sprite = sprite,
 		owner = owner,  -- "player" or "enemy"
 		start_x = x,
 		start_y = y,
 		start_z = z,
-		max_range = max_range or 20,
+		max_range = max_range or Bullets.BULLET_RANGE,
 		active = true
 	}
 
@@ -50,19 +52,19 @@ function Bullets.spawn(x, y, z, dir_x, dir_y, dir_z, sprite, owner, max_range)
 	return bullet
 end
 
--- Spawn player bullet (with rate limiting)
+-- Spawn player bullet (with rate limiting, faster speed)
 function Bullets.spawn_player_bullet(x, y, z, dir_x, dir_y, dir_z, max_range)
 	if Bullets.player_fire_timer > 0 then
 		return nil  -- Still on cooldown
 	end
 
 	Bullets.player_fire_timer = Bullets.PLAYER_FIRE_COOLDOWN
-	return Bullets.spawn(x, y, z, dir_x, dir_y, dir_z, Bullets.PLAYER_SPRITE, "player", max_range)
+	return Bullets.spawn(x, y, z, dir_x, dir_y, dir_z, Bullets.PLAYER_SPRITE, "player", max_range, Bullets.PLAYER_BULLET_SPEED)
 end
 
--- Spawn enemy bullet (no rate limit, controlled by enemy fire rate)
+-- Spawn enemy bullet (no rate limit, controlled by enemy fire rate, slower speed)
 function Bullets.spawn_enemy_bullet(x, y, z, dir_x, dir_y, dir_z, max_range)
-	return Bullets.spawn(x, y, z, dir_x, dir_y, dir_z, Bullets.ENEMY_SPRITE, "enemy", max_range)
+	return Bullets.spawn(x, y, z, dir_x, dir_y, dir_z, Bullets.ENEMY_SPRITE, "enemy", max_range, Bullets.ENEMY_BULLET_SPEED)
 end
 
 -- Update all bullets

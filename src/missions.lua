@@ -144,16 +144,21 @@ function Missions.start_mission_5(Mission)
 	end
 end
 
--- Start a mission by number
 -- Mission 6: Alien Invasion
 -- Combat mission - defend against alien waves
 function Missions.start_mission_6(Mission)
-	-- No specific mission objectives - combat handles itself
 	Mission.mission_name = "Alien Invasion"
-	Mission.objectives = {
-		"Defeat all alien waves",
-		"Survive the mother ship attack"
+	Mission.active = true
+	Mission.complete_flag = false  -- Not complete yet
+	Mission.current_objectives = {
+		"Destroy all alien waves"
 	}
+
+	-- Set landing pad for reference (Landing Pad A)
+	local target_pad = Mission.LandingPads.get_pad(1)
+	if target_pad then
+		Mission.landing_pad_pos = {x = target_pad.x, y = 0, z = target_pad.z}
+	end
 end
 
 function Missions.start(mission_num, Mission)

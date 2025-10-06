@@ -8,11 +8,18 @@ end
 
 -- Alien configuration
 Aliens.FIGHTER_HEALTH = 100
-Aliens.MOTHER_SHIP_HEALTH = 1000
-Aliens.FIGHTER_SPEED = 0.3
+Aliens.MOTHER_SHIP_HEALTH = 2000
+Aliens.FIGHTER_SPEED = 2.0  -- Units per second
 Aliens.FIGHTER_FIRE_RATE = 2  -- Bullets per second
 Aliens.FIGHTER_FIRE_ARC = 0.125  -- 45 degrees (45/360 = 0.125)
 Aliens.FIGHTER_FIRE_RANGE = 15  -- Units
+
+-- Fighter AI behavior
+Aliens.FIGHTER_ENGAGE_DIST = 10  -- 100 meters - get close
+Aliens.FIGHTER_RETREAT_DIST = 20  -- 200 meters - retreat distance
+Aliens.FIGHTER_ENGAGE_TIME = 10  -- Seconds to circle close
+Aliens.FIGHTER_RETREAT_TIME = 15  -- Seconds to stay far
+
 Aliens.MOTHER_SHIP_FIRE_RATE = 2  -- Bullets per second (reduced from 10 for performance)
 Aliens.MOTHER_SHIP_FIRE_RANGE = 25  -- Units
 
@@ -28,6 +35,8 @@ Aliens.fighters = {}
 Aliens.mother_ship = nil
 Aliens.current_wave = 0
 Aliens.wave_complete = false
+Aliens.mother_ship_destroyed = false  -- Track if mother ship was killed
+Aliens.mother_ship_destroyed_time = nil  -- Time when mother ship was destroyed
 
 -- Mesh storage (set from main.lua)
 Aliens.fighter_mesh = nil
@@ -43,11 +52,17 @@ function Aliens.spawn_fighter(x, y, z)
 		vy = 0,
 		vz = 0,
 		yaw = 0,
+		roll = 0,  -- Banking while turning
+		prev_yaw = 0,  -- For banking calculation
 		health = Aliens.FIGHTER_HEALTH,
 		max_health = Aliens.FIGHTER_HEALTH,
 		fire_timer = 0,
 		target = nil,  -- Will be set to player ship
-		type = "fighter"
+		type = "fighter",
+		-- AI state
+		ai_state = "engage",  -- "engage" or "retreat"
+		ai_timer = 0,  -- Time in current state
+		circle_angle = rnd(1)  -- Random starting angle for circling
 	}
 	add(Aliens.fighters, fighter)
 	return fighter
@@ -71,6 +86,15 @@ function Aliens.spawn_mother_ship(x, y, z)
 		type = "mother"
 	}
 	return Aliens.mother_ship
+end
+
+-- Reset alien state
+function Aliens.reset()
+	Aliens.fighters = {}
+	Aliens.mother_ship = nil
+	Aliens.current_wave = 0
+	Aliens.wave_complete = false
+	Aliens.mother_ship_destroyed = false
 end
 
 -- Start next wave
@@ -103,6 +127,10 @@ function Aliens.start_next_wave(player)
 	return true
 end
 
+-- Callbacks for explosions (set from main.lua)
+Aliens.on_fighter_destroyed = nil
+Aliens.on_mothership_destroyed = nil
+
 -- Update all aliens
 function Aliens.update(delta_time, player)
 	-- Update fighters
@@ -110,19 +138,25 @@ function Aliens.update(delta_time, player)
 		local fighter = Aliens.fighters[i]
 
 		if fighter.health <= 0 then
+			-- Trigger fighter explosion callback
+			if Aliens.on_fighter_destroyed then
+				Aliens.on_fighter_destroyed(fighter.x, fighter.y, fighter.z)
+			end
 			del(Aliens.fighters, fighter)
 		else
-			-- DEBUG: Make enemies stationary
-			-- Aliens.update_fighter(fighter, delta_time, player)
-
-			-- Just update fire timer
-			fighter.fire_timer += delta_time
+			Aliens.update_fighter(fighter, delta_time, player)
 		end
 	end
 
 	-- Update mother ship
 	if Aliens.mother_ship then
 		if Aliens.mother_ship.health <= 0 then
+			-- Trigger mother ship explosion callback
+			if Aliens.on_mothership_destroyed then
+				Aliens.on_mothership_destroyed(Aliens.mother_ship.x, Aliens.mother_ship.y, Aliens.mother_ship.z)
+			end
+			Aliens.mother_ship_destroyed = true  -- Mark as destroyed
+			Aliens.mother_ship_destroyed_time = time()  -- Record destruction time
 			Aliens.mother_ship = nil
 		else
 			-- DEBUG: Make mother ship stationary
@@ -133,60 +167,121 @@ function Aliens.update(delta_time, player)
 		end
 	end
 
-	-- Check if wave is complete
-	if #Aliens.fighters == 0 and not Aliens.mother_ship then
+	-- Check if wave is complete (only if a wave has been started)
+	if #Aliens.fighters == 0 and not Aliens.mother_ship and Aliens.current_wave > 0 then
 		Aliens.wave_complete = true
 	end
 end
 
--- Update fighter AI
+-- Update fighter AI (engage/retreat pattern)
 function Aliens.update_fighter(fighter, delta_time, player)
-	-- Simple AI: circle around player and strafe
+	-- Update AI state timer
+	fighter.ai_timer += delta_time
+
+	-- Direction to player
 	local dx = player.x - fighter.x
 	local dy = player.y - fighter.y
 	local dz = player.z - fighter.z
 	local dist = sqrt(dx*dx + dy*dy + dz*dz)
 
-	-- Desired distance from player
-	local desired_dist = 12
+	-- State machine: engage (get close and circle) or retreat (fly away)
+	if fighter.ai_state == "engage" then
+		-- Engage: fly to 80m and circle for 10 seconds
+		if fighter.ai_timer >= Aliens.FIGHTER_ENGAGE_TIME then
+			fighter.ai_state = "retreat"
+			fighter.ai_timer = 0
+		end
 
-	-- Calculate direction to player
-	local dir_x = dx / dist
-	local dir_y = dy / dist
-	local dir_z = dz / dist
+		local desired_dist = Aliens.FIGHTER_ENGAGE_DIST
 
-	-- Move toward or away to maintain distance
-	if dist > desired_dist + 2 then
-		fighter.vx = dir_x * Aliens.FIGHTER_SPEED
-		fighter.vy = dir_y * Aliens.FIGHTER_SPEED
-		fighter.vz = dir_z * Aliens.FIGHTER_SPEED
-	elseif dist < desired_dist - 2 then
-		fighter.vx = -dir_x * Aliens.FIGHTER_SPEED
-		fighter.vy = -dir_y * Aliens.FIGHTER_SPEED
-		fighter.vz = -dir_z * Aliens.FIGHTER_SPEED
-	else
-		-- Strafe around player
-		local strafe_angle = atan2(dz, dx) + 0.25  -- Perpendicular
-		fighter.vx = cos(strafe_angle) * Aliens.FIGHTER_SPEED
-		fighter.vz = sin(strafe_angle) * Aliens.FIGHTER_SPEED
-		fighter.vy = 0
+		if dist > desired_dist + 2 then
+			-- Move toward player
+			local dir_x = dx / dist
+			local dir_y = dy / dist
+			local dir_z = dz / dist
+			fighter.vx = dir_x * Aliens.FIGHTER_SPEED
+			fighter.vy = dir_y * Aliens.FIGHTER_SPEED
+			fighter.vz = dir_z * Aliens.FIGHTER_SPEED
+		else
+			-- Circle around player with small radius (1-2 units = 10-20m)
+			fighter.circle_angle += delta_time * 0.3  -- Rotation speed
+			local circle_radius = 1.5  -- 15 meters circle radius
+			local circle_x = player.x + cos(fighter.circle_angle) * circle_radius
+			local circle_z = player.z + sin(fighter.circle_angle) * circle_radius
+			local circle_y = player.y + 2
+
+			local to_circle_x = circle_x - fighter.x
+			local to_circle_y = circle_y - fighter.y
+			local to_circle_z = circle_z - fighter.z
+			local to_circle_dist = sqrt(to_circle_x*to_circle_x + to_circle_y*to_circle_y + to_circle_z*to_circle_z)
+
+			if to_circle_dist > 0.1 then
+				fighter.vx = (to_circle_x / to_circle_dist) * Aliens.FIGHTER_SPEED
+				fighter.vy = (to_circle_y / to_circle_dist) * Aliens.FIGHTER_SPEED
+				fighter.vz = (to_circle_z / to_circle_dist) * Aliens.FIGHTER_SPEED
+			end
+		end
+
+	elseif fighter.ai_state == "retreat" then
+		-- Retreat: fly to 200m and stay for 15 seconds
+		if fighter.ai_timer >= Aliens.FIGHTER_RETREAT_TIME then
+			fighter.ai_state = "engage"
+			fighter.ai_timer = 0
+		end
+
+		local desired_dist = Aliens.FIGHTER_RETREAT_DIST
+
+		if dist < desired_dist - 2 then
+			-- Move away from player
+			local dir_x = -dx / dist
+			local dir_y = -dy / dist
+			local dir_z = -dz / dist
+			fighter.vx = dir_x * Aliens.FIGHTER_SPEED
+			fighter.vy = dir_y * Aliens.FIGHTER_SPEED
+			fighter.vz = dir_z * Aliens.FIGHTER_SPEED
+		else
+			-- Hold position at distance
+			fighter.vx = 0
+			fighter.vy = 0
+			fighter.vz = 0
+		end
 	end
 
-	-- Stay above minimum altitude (avoid terrain/buildings)
+	-- Stay above minimum altitude
 	local min_altitude = 10  -- 100 meters
 	if fighter.y < min_altitude then
-		fighter.vy = 0.5  -- Push upward
+		fighter.vy = 0.5
 	elseif fighter.y > 30 then
-		fighter.vy = -0.2  -- Don't go too high
+		fighter.vy = -0.2
 	end
 
 	-- Update position
-	fighter.x += fighter.vx * delta_time * 60
-	fighter.y += fighter.vy * delta_time * 60
-	fighter.z += fighter.vz * delta_time * 60
+	fighter.x += fighter.vx * delta_time
+	fighter.y += fighter.vy * delta_time
+	fighter.z += fighter.vz * delta_time
 
-	-- Rotate to face player
-	fighter.yaw = atan2(dx, dz)
+	-- Rotate to face velocity direction (direction of flight)
+	local new_yaw = atan2(fighter.vx, fighter.vz)
+
+	-- Calculate yaw change for banking
+	local yaw_change = new_yaw - fighter.prev_yaw
+	-- Normalize to -0.5 to 0.5
+	while yaw_change > 0.5 do yaw_change -= 1 end
+	while yaw_change < -0.5 do yaw_change += 1 end
+
+	-- Bank based on turn rate (max 30 degrees = 0.083 turns)
+	local max_bank = 0.083
+	fighter.roll = -yaw_change * 10  -- Negative for correct banking direction
+	if fighter.roll > max_bank then fighter.roll = max_bank end
+	if fighter.roll < -max_bank then fighter.roll = -max_bank end
+
+	-- Smooth roll back to level when not turning much
+	if abs(yaw_change) < 0.01 then
+		fighter.roll = fighter.roll * 0.9  -- Dampen roll
+	end
+
+	fighter.prev_yaw = fighter.yaw
+	fighter.yaw = new_yaw
 
 	-- Update fire timer
 	fighter.fire_timer += delta_time

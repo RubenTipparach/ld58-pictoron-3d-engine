@@ -219,26 +219,35 @@ function Mission.update(delta_time, ship_x, ship_y, ship_z, right_click_held, sh
 		end
 	end
 
-	-- Check if all cargo delivered to landing pad
-	local all_delivered = true
-	for cargo in all(Mission.cargo_objects) do
-		if cargo.state != "delivered" then
-			all_delivered = false
-			break
+	-- Check if all cargo delivered to landing pad (only for cargo missions)
+	if Mission.total_cargo > 0 then
+		local all_delivered = true
+		for cargo in all(Mission.cargo_objects) do
+			if cargo.state != "delivered" then
+				all_delivered = false
+				break
+			end
 		end
-	end
 
-	if all_delivered and Mission.collected_cargo >= Mission.total_cargo then
-		Mission.complete()
+		if all_delivered and Mission.collected_cargo >= Mission.total_cargo then
+			Mission.complete()
+		end
 	end
 end
 
 -- Complete the mission
 function Mission.complete()
 	Mission.complete_flag = true
+
+	-- Mission-specific completion text
+	local completion_text = "All cargo delivered"
+	if Mission.current_mission_num == 6 then
+		completion_text = "All alien waves destroyed!"
+	end
+
 	Mission.current_objectives = {
 		"MISSION COMPLETE!",
-		"All cargo delivered",
+		completion_text,
 		"",
 		"[Q] Return to Menu"
 	}

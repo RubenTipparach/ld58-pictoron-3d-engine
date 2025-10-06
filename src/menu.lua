@@ -34,7 +34,7 @@ local CLOUD_SCALE_OFFSET = 2  -- How much larger than planet
 local CLOUD_ROTATION_SPEED = 0.02  -- Slightly faster than planet
 
 -- Menu render distance (much larger than game)
-local MENU_RENDER_DISTANCE = 200
+local MENU_RENDER_DISTANCE = 2000
 
 local Menu = {}
 
@@ -582,6 +582,7 @@ function Menu.draw(camera, render_mesh_func)
 	end
 
 	-- Render planet in background (draw first, always behind everything)
+	fillp()  -- Clear any dither pattern before rendering planet
 	local planet_sorted = render_mesh_func(
 		Menu.planet.verts,
 		Menu.planet.faces,
@@ -591,7 +592,7 @@ function Menu.draw(camera, render_mesh_func)
 		nil, false,
 		PLANET_PITCH, PLANET_YAW + Menu.planet.rotation, PLANET_ROLL,
 		MENU_RENDER_DISTANCE,  -- Extended render distance for space scene
-		nil  -- No fog for planet
+		999999  -- No fog (far fog start = no fog)
 	)
 	Renderer.sort_faces(planet_sorted)
 	Renderer.draw_faces(planet_sorted, false)
@@ -607,7 +608,7 @@ function Menu.draw(camera, render_mesh_func)
 		nil, false,
 		PLANET_PITCH, PLANET_YAW + Menu.clouds.rotation, PLANET_ROLL,
 		MENU_RENDER_DISTANCE,  -- Extended render distance for space scene
-		nil  -- No fog for clouds
+		999999  -- No fog (far fog start = no fog)
 	)
 	Renderer.sort_faces(cloud_sorted)
 	Renderer.draw_faces(cloud_sorted, false)
