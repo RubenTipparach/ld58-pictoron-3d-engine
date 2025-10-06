@@ -11,7 +11,7 @@ function Missions.start_mission_1(Mission)
 	local pad_x, pad_y, pad_z, pad_yaw = LandingPads.get_spawn(1)
 	pad_x = pad_x or 0
 	pad_z = pad_z or 0
-	Mission.start_hover_mission(Mission.M1_HOVER_DURATION, pad_x, pad_z)
+	Mission.start_hover_mission(Mission.M1_HOVER_DURATION, pad_x, pad_z, 1)  -- Landing Pad A (ID 1)
 	-- Update mission name
 	Mission.mission_name = "Engine Test"
 end
@@ -34,7 +34,7 @@ function Missions.start_mission_2(Mission)
 		add(cargo_list, {aseprite_x = cargo_aseprite_x, aseprite_z = cargo_aseprite_z})
 	end
 
-	Mission.start_cargo_mission(cargo_list, pad_x, pad_z)
+	Mission.start_cargo_mission(cargo_list, pad_x, pad_z, 1)  -- Landing Pad A (ID 1)
 	-- Update mission name
 	Mission.mission_name = "Cargo Delivery"
 end

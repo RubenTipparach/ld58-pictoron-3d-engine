@@ -44,6 +44,18 @@ function Collision.point_in_box(point_x, point_z, box_x, box_z, half_width, half
 	return abs(dx) < half_width and abs(dz) < half_depth
 end
 
+-- Check if two axis-aligned bounding boxes overlap (AABB collision)
+-- @param box1_x, box1_z: first box center position
+-- @param box1_half_width, box1_half_depth: first box half-extents
+-- @param box2_x, box2_z: second box center position
+-- @param box2_half_width, box2_half_depth: second box half-extents
+-- @return true if boxes overlap
+function Collision.box_overlap(box1_x, box1_z, box1_half_width, box1_half_depth, box2_x, box2_z, box2_half_width, box2_half_depth)
+	local dx = abs(box1_x - box2_x)
+	local dz = abs(box1_z - box2_z)
+	return dx < (box1_half_width + box2_half_width) and dz < (box1_half_depth + box2_half_depth)
+end
+
 -- Find the nearest edge of a box and calculate push-out vector
 -- @param point_x, point_z: point coordinates
 -- @param box_x, box_z: box center position
@@ -121,17 +133,17 @@ end
 -- @param width, height, depth: box dimensions (full size, not half)
 -- @param color: line color
 function Collision.draw_wireframe(camera, x, y, z, width, height, depth, color)
-	-- Calculate 8 corners of the box
+	-- Calculate 8 corners of the box (centered on x, y, z)
 	local hw, hh, hd = width/2, height/2, depth/2
 	local corners = {
-		vec(x - hw, y, z - hd),      -- bottom front left
-		vec(x + hw, y, z - hd),      -- bottom front right
-		vec(x + hw, y, z + hd),      -- bottom back right
-		vec(x - hw, y, z + hd),      -- bottom back left
-		vec(x - hw, y + height, z - hd),  -- top front left
-		vec(x + hw, y + height, z - hd),  -- top front right
-		vec(x + hw, y + height, z + hd),  -- top back right
-		vec(x - hw, y + height, z + hd),  -- top back left
+		vec(x - hw, y - hh, z - hd),  -- bottom front left
+		vec(x + hw, y - hh, z - hd),  -- bottom front right
+		vec(x + hw, y - hh, z + hd),  -- bottom back right
+		vec(x - hw, y - hh, z + hd),  -- bottom back left
+		vec(x - hw, y + hh, z - hd),  -- top front left
+		vec(x + hw, y + hh, z - hd),  -- top front right
+		vec(x + hw, y + hh, z + hd),  -- top back right
+		vec(x - hw, y + hh, z + hd),  -- top back left
 	}
 
 	-- Project corners to screen space

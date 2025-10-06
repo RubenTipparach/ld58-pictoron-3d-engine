@@ -12,7 +12,7 @@ local SHIP_COLLISION_DEPTH = 1.5   -- Default depth
 
 -- Ship collision box with cargo attached
 local SHIP_CARGO_COLLISION_WIDTH = 2.0   -- Width with cargo
-local SHIP_CARGO_COLLISION_HEIGHT = 8.0  -- Height with cargo
+local SHIP_CARGO_COLLISION_HEIGHT = 2.0  -- Height with cargo
 local SHIP_CARGO_COLLISION_DEPTH = 2.0   -- Depth with cargo
 
 -- Function to get current ship collision dimensions
@@ -267,7 +267,9 @@ local pad_depth = pad_max_z - pad_min_z
 -- Create landing pads using the LandingPads system
 -- Landing pads automatically adjust to terrain height
 -- To spawn ship on a specific pad: LandingPads.get_spawn(id) returns x, y, z, yaw
--- Pad 1: Main spawn pad
+-- Using Aseprite tilemap coordinates (x, z) where (64, 64) = world center (0, 0)
+
+-- Pad 1: Main spawn pad (Landing Pad A)
 local landing_pad_1 = LandingPads.create_pad({
 	id = 1,
 	name = Constants.LANDING_PAD_NAMES[1],
@@ -284,20 +286,39 @@ local landing_pad_1 = LandingPads.create_pad({
 	collision_y_offset = -1.0  -- Adjust collision box down
 })
 
--- Example: Pad 2 at a different location (commented out)
--- local landing_pad_2 = LandingPads.create_pad({
--- 	id = 2,
--- 	x = -10,
--- 	z = 15,
--- 	mesh = landing_pad_mesh,
--- 	scale = 0.5,
--- 	sprite = SPRITE_LANDING_PAD,
--- 	collision_dims = {
--- 		width = pad_width,
--- 		height = 1.5,
--- 		depth = pad_depth
--- 	}
--- })
+-- Pad 2: Landing Pad B at aseprite coords (25, 36)
+local landing_pad_2 = LandingPads.create_pad_aseprite({
+	id = 2,
+	name = Constants.LANDING_PAD_NAMES[2],
+	aseprite_x = 25,
+	aseprite_z = 36,
+	mesh = landing_pad_mesh,
+	scale = 0.5,
+	sprite = SPRITE_LANDING_PAD,
+	collision_dims = {
+		width = pad_width,
+		height = 2,
+		depth = pad_depth
+	},
+	collision_y_offset = -1.0
+})
+
+-- Pad 3: Landing Pad C at aseprite coords (115, 112)
+local landing_pad_3 = LandingPads.create_pad_aseprite({
+	id = 3,
+	name = Constants.LANDING_PAD_NAMES[3],
+	aseprite_x = 115,
+	aseprite_z = 112,
+	mesh = landing_pad_mesh,
+	scale = 0.5,
+	sprite = SPRITE_LANDING_PAD,
+	collision_dims = {
+		width = pad_width,
+		height = 2,
+		depth = pad_depth
+	},
+	collision_y_offset = -1.0
+})
 
 -- Keep reference to primary pad for backward compatibility
 local landing_pad = landing_pad_1
@@ -999,12 +1020,8 @@ function _update()
 			local half_depth = config.depth
 			local building_height = config.height * 2  -- Height is scaled by 2 in vertex generation
 
-			-- Expand building bounds by ship's half-dimensions for proper collision
-			local expanded_half_width = half_width + ship_half_width
-			local expanded_half_depth = half_depth + ship_half_depth
-
-			-- Check if VTOL is within building's horizontal bounds using Collision module
-			if Collision.point_in_box(vtol.x, vtol.z, building.x, building.z, expanded_half_width, expanded_half_depth) then
+			-- Check if ship's bounding box overlaps with building's bounding box
+			if Collision.box_overlap(vtol.x, vtol.z, ship_half_width, ship_half_depth, building.x, building.z, half_width, half_depth) then
 				-- VTOL is horizontally above/inside this building
 				local building_top = building.y + building_height
 				local building_bottom = building.y
@@ -1244,7 +1261,7 @@ function _update()
 	                    not vtol.thrusters[4].active
 
 	-- Pass is_on_landing_pad status to mission for cargo delivery
-	Mission.update(delta_time, vtol.x, vtol.y, vtol.z, right_click_held, is_on_landing_pad, vtol.pitch, vtol.yaw, vtol.roll, engines_off)
+	Mission.update(delta_time, vtol.x, vtol.y, vtol.z, right_click_held, is_on_landing_pad, vtol.pitch, vtol.yaw, vtol.roll, engines_off, current_landing_pad)
 
 	-- Handle cargo delivery - snap ship to landed position without damage
 	if Mission.cargo_just_delivered then
@@ -1653,8 +1670,8 @@ function _draw()
 		end
 	end
 
-	-- Draw minimap using Minimap module
-	Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, Heightmap, position_history, Mission.cargo_objects)
+	-- Draw minimap using Minimap module (pass all landing pads and target pad ID)
+	Minimap.draw(camera, vtol, buildings, building_configs, LandingPads.get_all(), Heightmap, position_history, Mission.cargo_objects, Mission.required_landing_pad_id)
 
 	-- Draw 3D compass (cross/diamond shape with red and grey arrows)
 	-- Side view: <> (diamond), Front view: X (cross)
@@ -1736,49 +1753,32 @@ function _draw()
 	circfill(compass_x, compass_y, 2, 0)  -- Black center
 	circ(compass_x, compass_y, 2, 7)  -- White outline
 
-	-- Draw cargo direction indicator (orange arrow)
-	if Mission.active and Mission.cargo_objects and #Mission.cargo_objects > 0 then
-		-- Find nearest cargo that's not attached or delivered
-		local nearest_cargo = nil
-		local nearest_dist = 999999
-		for cargo in all(Mission.cargo_objects) do
-			if cargo.state ~= "attached" and cargo.state ~= "delivered" then
-				local dx = cargo.x - vtol.x
-				local dz = cargo.z - vtol.z
-				local dist = sqrt(dx*dx + dz*dz)
-				if dist < nearest_dist then
-					nearest_dist = dist
-					nearest_cargo = cargo
-				end
-			end
-		end
+	-- Draw mission target direction indicator (orange arrow)
+	-- Points to current mission objective (cargo, landing pad, etc.)
+	if Mission.active and Mission.current_target then
+		local dx = Mission.current_target.x - vtol.x
+		local dz = Mission.current_target.z - vtol.z
 
-		-- Draw arrow pointing to nearest cargo
-		if nearest_cargo then
-			local dx = nearest_cargo.x - vtol.x
-			local dz = nearest_cargo.z - vtol.z
+		-- Create 3D point in direction of target (invert for correct direction)
+		local target_point = {x = -dx, y = 0, z = -dz}
+		-- Normalize to compass size
+		local mag = sqrt(dx*dx + dz*dz)
+		if mag > 0.01 then
+			target_point.x = (-dx / mag) * compass_size
+			target_point.z = (-dz / mag) * compass_size
 
-			-- Create 3D point in direction of cargo (invert for correct direction)
-			local cargo_point = {x = -dx, y = 0, z = -dz}
-			-- Normalize to compass size
-			local mag = sqrt(dx*dx + dz*dz)
-			if mag > 0.01 then
-				cargo_point.x = (-dx / mag) * compass_size
-				cargo_point.z = (-dz / mag) * compass_size
+			-- Transform by camera rotation
+			local x_yaw = target_point.x * cos_yaw - target_point.z * sin_yaw
+			local z_yaw = target_point.x * sin_yaw + target_point.z * cos_yaw
+			local y_pitch = 0 * cos_pitch - z_yaw * sin_pitch
 
-				-- Transform by camera rotation
-				local x_yaw = cargo_point.x * cos_yaw - cargo_point.z * sin_yaw
-				local z_yaw = cargo_point.x * sin_yaw + cargo_point.z * cos_yaw
-				local y_pitch = 0 * cos_pitch - z_yaw * sin_pitch
+			-- Project to screen
+			local target_screen_x = compass_x + x_yaw
+			local target_screen_y = compass_y + y_pitch
 
-				-- Project to screen
-				local cargo_screen_x = compass_x + x_yaw
-				local cargo_screen_y = compass_y + y_pitch
-
-				-- Draw orange arrow to cargo
-				line(compass_x, compass_y, cargo_screen_x, cargo_screen_y, 9)  -- Orange
-				circfill(cargo_screen_x, cargo_screen_y, 2, 9)  -- Orange arrowhead
-			end
+			-- Draw orange arrow to target
+			line(compass_x, compass_y, target_screen_x, target_screen_y, 9)  -- Orange
+			circfill(target_screen_x, target_screen_y, 2, 9)  -- Orange arrowhead
 		end
 	end
 
@@ -1911,6 +1911,19 @@ function _draw()
 
 	-- Draw physics wireframes (if enabled) using Collision module
 	if DEBUG_SHOW_PHYSICS_WIREFRAME then
+		-- Draw ship collision box (cyan) to test AABB
+		local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
+		Collision.draw_wireframe(
+			camera,
+			vtol.x,
+			vtol.y,
+			vtol.z,
+			ship_width,
+			ship_height,
+			ship_depth,
+			11  -- Cyan for ship
+		)
+
 		-- Draw landing pad collision box (white) if within render distance
 		local dx = landing_pad.x - camera.x
 		local dz = landing_pad.z - camera.z
@@ -1921,20 +1934,28 @@ function _draw()
 		end
 
 		-- Draw building collision boxes (red) if within render distance
-		for _, building in ipairs(buildings) do
+		for i, building in ipairs(buildings) do
 			local dx = building.x - camera.x
 			local dz = building.z - camera.z
 			if dx*dx + dz*dz <= RENDER_DISTANCE * RENDER_DISTANCE then
-				Collision.draw_wireframe(
-					camera,
-					building.x,
-					building.y,
-					building.z,
-					building.width,
-					building.height,
-					building.depth,
-					8  -- Red
-				)
+				-- Get building config for accurate dimensions
+				local config = building_configs[i]
+				if config then
+					local full_width = config.width * 2   -- config stores half-width
+					local full_height = config.height * 2 -- config stores half-height
+					local full_depth = config.depth * 2   -- config stores half-depth
+
+					Collision.draw_wireframe(
+						camera,
+						building.x,
+						building.y + config.height,  -- Center Y at middle of building
+						building.z,
+						full_width,
+						full_height,
+						full_depth,
+						8  -- Red
+					)
+				end
 			end
 		end
 	end
@@ -1994,6 +2015,17 @@ function _draw()
 		print("Engines off: " .. (engines_off and "YES" or "NO"), debug_x, debug_y + y_offset, 6)
 		y_offset += 8
 		print("On pad: " .. (is_on_landing_pad and "YES" or "NO"), debug_x, debug_y + y_offset, 6)
+		y_offset += 8
+
+		-- Show distance to landing pad
+		if Mission.landing_pad_pos then
+			local dx = vtol.x - Mission.landing_pad_pos.x
+			local dz = vtol.z - Mission.landing_pad_pos.z
+			local dist = sqrt(dx*dx + dz*dz)
+			print("Pad dist: " .. flr(dist * 100) / 100, debug_x, debug_y + y_offset, 6)
+			y_offset += 8
+			print("Pad radius: " .. Mission.LANDING_PAD_RADIUS, debug_x, debug_y + y_offset, 6)
+		end
 	end
 
 	-- Show death overlay (rendered on top of everything)

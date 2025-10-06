@@ -74,10 +74,12 @@ end
 -- @param vtol: player ship with x, y, z
 -- @param buildings: array of building objects
 -- @param building_configs: array of building configs
--- @param landing_pad: landing pad object
+-- @param landing_pad: landing pad object or array of landing pads
 -- @param heightmap: heightmap module reference
 -- @param position_history: array of {x, z, t} position records
-function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, heightmap, position_history, cargo_objects)
+-- @param cargo_objects: cargo objects to display
+-- @param target_landing_pad_id: ID of landing pad to flash (optional)
+function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, heightmap, position_history, cargo_objects, target_landing_pad_id)
 	-- Border (black, 2 pixels thick) - moved 1 pixel left
 	rectfill(Minimap.X - 2, Minimap.Y - 2, Minimap.X + Minimap.SIZE + 1, Minimap.Y + Minimap.SIZE + 1, 0)
 
@@ -118,11 +120,7 @@ function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, he
 		end
 	end
 
-	-- Draw landing pad on minimap (2x2 pixels for visibility)
-	local pad_x = Minimap.X + Minimap.SIZE / 2 + landing_pad.x * pixels_per_world_unit
-	local pad_y = Minimap.Y + Minimap.SIZE / 2 + landing_pad.z * pixels_per_world_unit
-
-	-- Check if any cargo is attached (flash landing pad when cargo collected)
+	-- Check if any cargo is attached (flash target landing pad when cargo collected)
 	local cargo_attached = false
 	if cargo_objects then
 		for cargo in all(cargo_objects) do
@@ -133,17 +131,38 @@ function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, he
 		end
 	end
 
-	-- Flash landing pad when cargo is attached, otherwise solid white
-	if cargo_attached then
-		-- Flash at 4Hz (faster than cargo)
-		if (time() * 4) % 1 < 0.5 then
-			rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 11)  -- Cyan flash
+	-- Draw all landing pads on minimap (2x2 pixels for visibility)
+	-- Support both single landing_pad (backward compat) and landing_pads array
+	local pads_to_draw = {}
+	if type(landing_pad) == "table" then
+		if landing_pad.x then
+			-- Single landing pad object
+			add(pads_to_draw, landing_pad)
 		else
-			rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 7)   -- White
+			-- Array of landing pads
+			for pad in all(landing_pad) do
+				add(pads_to_draw, pad)
+			end
 		end
-	else
-		-- Solid white when no cargo attached
-		rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 7)  -- White 2x2 pixels
+	end
+
+	for _, pad in ipairs(pads_to_draw) do
+		local pad_x = Minimap.X + Minimap.SIZE / 2 + pad.x * pixels_per_world_unit
+		local pad_y = Minimap.Y + Minimap.SIZE / 2 + pad.z * pixels_per_world_unit
+
+		-- Flash only the target landing pad when cargo is attached
+		local is_target_pad = target_landing_pad_id and pad.id == target_landing_pad_id
+		if cargo_attached and is_target_pad then
+			-- Flash at 4Hz (faster than cargo)
+			if (time() * 4) % 1 < 0.5 then
+				rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 11)  -- Cyan flash
+			else
+				rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 7)   -- White
+			end
+		else
+			-- Solid white for all other pads
+			rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 7)  -- White 2x2 pixels
+		end
 	end
 
 	-- Draw cargo objects on minimap (blinking)

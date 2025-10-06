@@ -26,8 +26,23 @@ Constants.SPRITE_HEIGHTMAP = 64  -- Heightmap data source (128x128)
 
 -- Landing pad names
 Constants.LANDING_PAD_NAMES = {
-	[1] = "Landing Pad A"
+	[1] = "Landing Pad A",
+	[2] = "Landing Pad B",
+	[3] = "Landing Pad C"
 }
+
+-- Coordinate conversion utilities
+-- Convert Aseprite tilemap coordinates to world coordinates
+-- Aseprite: (0,0) = top-left, (128,128) = bottom-right, (64,64) = center
+-- World: Center at (0,0), 1 tile = 4 world units
+function Constants.aseprite_to_world(aseprite_x, aseprite_z)
+	return (aseprite_x - 64) * 4, (aseprite_z - 64) * 4
+end
+
+-- Convert world coordinates to Aseprite tilemap coordinates
+function Constants.world_to_aseprite(world_x, world_z)
+	return (world_x / 4) + 64, (world_z / 4) + 64
+end
 
 -- Building names
 Constants.BUILDING_NAMES = {

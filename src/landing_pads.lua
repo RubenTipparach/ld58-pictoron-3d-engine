@@ -6,6 +6,7 @@ local LandingPads = {}
 -- Import heightmap for automatic height adjustment
 local Heightmap = include("src/heightmap.lua")
 local Collision = include("src/collision.lua")
+local Constants = include("src/constants.lua")
 
 -- List of all landing pads in the world
 LandingPads.pads = {}
@@ -110,6 +111,29 @@ end
 -- @return array of landing pad objects
 function LandingPads.get_all()
 	return LandingPads.pads
+end
+
+-- Create a landing pad using Aseprite tilemap coordinates
+-- @param config: {id, name, aseprite_x, aseprite_z, mesh, scale, sprite, collision_dims, collision_y_offset}
+-- @return landing pad object
+function LandingPads.create_pad_aseprite(config)
+	-- Convert Aseprite coordinates to world coordinates
+	local world_x, world_z = Constants.aseprite_to_world(config.aseprite_x, config.aseprite_z)
+
+	-- Create new config with world coordinates
+	local world_config = {
+		id = config.id,
+		name = config.name,
+		x = world_x,
+		z = world_z,
+		mesh = config.mesh,
+		scale = config.scale,
+		sprite = config.sprite,
+		collision_dims = config.collision_dims,
+		collision_y_offset = config.collision_y_offset
+	}
+
+	return LandingPads.create_pad(world_config)
 end
 
 return LandingPads

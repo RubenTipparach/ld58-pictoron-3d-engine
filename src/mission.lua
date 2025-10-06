@@ -16,8 +16,8 @@ Mission.OBJECTIVES_BOX_Y = 5  -- Y position of objectives box
 Mission.M1_HOVER_DURATION = 5  -- How long to hover in seconds
 
 -- Mission 2: Cargo Delivery
-Mission.M2_CARGO_DISTANCE_X = -10  -- Cargo X offset from landing pad (units, negative = west)
-Mission.M2_CARGO_DISTANCE_Z = 0     -- Cargo Z offset from landing pad (units)
+Mission.M2_CARGO_DISTANCE_X = -100  -- Cargo X offset from landing pad (units, negative = west)
+Mission.M2_CARGO_DISTANCE_Z = 20     -- Cargo Z offset from landing pad (units)
 Mission.M2_CARGO_COUNT = 1          -- Number of cargo boxes
 
 -- Mission state
@@ -28,6 +28,8 @@ Mission.collected_cargo = 0
 Mission.active = false
 Mission.complete_flag = false
 Mission.landing_pad_pos = {x = 0, y = 0, z = 0}  -- Landing pad position for navigation
+Mission.required_landing_pad_id = nil  -- ID of the target landing pad for this mission
+Mission.current_target = {x = 0, z = 0}  -- Current mission objective location (for compass)
 Mission.show_pause_menu = false
 Mission.cargo_just_delivered = false  -- Flag for snapping ship to landed position
 Mission.type = nil  -- Mission type: "hover", "cargo", etc.
@@ -38,7 +40,8 @@ Mission.mission_name = ""  -- Name of current mission
 -- Initialize a hover mission (take off, hover, land)
 -- hover_duration: how long to hover in seconds
 -- landing_pad_x, landing_pad_z: landing pad position
-function Mission.start_hover_mission(hover_duration, landing_pad_x, landing_pad_z)
+-- landing_pad_id: ID of the landing pad (default 1)
+function Mission.start_hover_mission(hover_duration, landing_pad_x, landing_pad_z, landing_pad_id)
 	Mission.active = true
 	Mission.complete_flag = false
 	Mission.type = "hover"
@@ -46,9 +49,14 @@ function Mission.start_hover_mission(hover_duration, landing_pad_x, landing_pad_
 	Mission.hover_duration = hover_duration
 	Mission.show_pause_menu = false
 
-	-- Store landing pad position
+	-- Store landing pad position and ID
 	Mission.landing_pad_pos.x = landing_pad_x or 0
 	Mission.landing_pad_pos.z = landing_pad_z or 0
+	Mission.required_landing_pad_id = landing_pad_id or 1
+
+	-- Set target to landing pad (hover mission always returns to start pad)
+	Mission.current_target.x = landing_pad_x or 0
+	Mission.current_target.z = landing_pad_z or 0
 
 	-- Set objective text
 	Mission.current_objectives = {
@@ -62,7 +70,8 @@ end
 -- Initialize a mission with cargo pickups
 -- cargo_coords: array of {aseprite_x, aseprite_z} coordinates
 -- landing_pad_x, landing_pad_z: landing pad position for navigation
-function Mission.start_cargo_mission(cargo_coords, landing_pad_x, landing_pad_z)
+-- landing_pad_id: ID of the landing pad to deliver to (default 1)
+function Mission.start_cargo_mission(cargo_coords, landing_pad_x, landing_pad_z, landing_pad_id)
 	Mission.active = true
 	Mission.complete_flag = false
 	Mission.type = "cargo"
@@ -71,9 +80,10 @@ function Mission.start_cargo_mission(cargo_coords, landing_pad_x, landing_pad_z)
 	Mission.collected_cargo = 0
 	Mission.show_pause_menu = false
 
-	-- Store landing pad position
+	-- Store landing pad position and ID
 	Mission.landing_pad_pos.x = landing_pad_x or 0
 	Mission.landing_pad_pos.z = landing_pad_z or 0
+	Mission.required_landing_pad_id = landing_pad_id or 1
 
 	-- Create cargo objects at specified coordinates
 	for i, coord in ipairs(cargo_coords) do
@@ -86,6 +96,12 @@ function Mission.start_cargo_mission(cargo_coords, landing_pad_x, landing_pad_z)
 		add(Mission.cargo_objects, cargo)
 	end
 
+	-- Set initial target to first cargo location
+	if Mission.cargo_objects[1] then
+		Mission.current_target.x = Mission.cargo_objects[1].x
+		Mission.current_target.z = Mission.cargo_objects[1].z
+	end
+
 	-- Set objective text with button prompts for mission 1
 	Mission.current_objectives = {
 		"Collect all cargo and return to Landing Pad A",
@@ -96,7 +112,7 @@ function Mission.start_cargo_mission(cargo_coords, landing_pad_x, landing_pad_z)
 end
 
 -- Update mission state (check pickups, update objectives)
-function Mission.update(delta_time, ship_x, ship_y, ship_z, right_click_held, ship_landed, ship_pitch, ship_yaw, ship_roll, engines_off)
+function Mission.update(delta_time, ship_x, ship_y, ship_z, right_click_held, ship_landed, ship_pitch, ship_yaw, ship_roll, engines_off, current_landing_pad)
 	if not Mission.active then return end
 	if Mission.complete_flag then return end
 
@@ -134,33 +150,30 @@ function Mission.update(delta_time, ship_x, ship_y, ship_z, right_click_held, sh
 			cargo.was_attached = true
 			Mission.collected_cargo += 1
 			Mission.current_objectives[2] = "Cargo: " .. Mission.collected_cargo .. "/" .. Mission.total_cargo
+
+			-- Switch target to landing pad when cargo is collected
+			Mission.current_target.x = Mission.landing_pad_pos.x
+			Mission.current_target.z = Mission.landing_pad_pos.z
 		end
 
 		-- Check if cargo delivered when landed on pad with cargo attached and engines off
-		if cargo.state == "attached" and not cargo.was_delivered and ship_landed and engines_off then
-			-- Check if ship is on landing pad
-			local dx = ship_x - Mission.landing_pad_pos.x
-			local dz = ship_z - Mission.landing_pad_pos.z
-			local dist = sqrt(dx*dx + dz*dz)
+		-- Also verify we're on the correct landing pad
+		local on_correct_pad = current_landing_pad and current_landing_pad.id == Mission.required_landing_pad_id
 
-			if dist < Mission.LANDING_PAD_RADIUS then
-				-- Initialize delivery timer if not started
-				if not cargo.delivery_timer then
-					cargo.delivery_timer = 0
-				end
+		if cargo.state == "attached" and not cargo.was_delivered and ship_landed and engines_off and on_correct_pad then
+			-- Initialize delivery timer if not started
+			if not cargo.delivery_timer then
+				cargo.delivery_timer = 0
+			end
 
-				-- Increment timer
-				cargo.delivery_timer += delta_time
+			-- Increment timer
+			cargo.delivery_timer += delta_time
 
-				-- Deliver after delay
-				if cargo.delivery_timer >= Mission.CARGO_DELIVERY_DELAY then
-					cargo.state = "delivered"
-					cargo.was_delivered = true
-					Mission.cargo_just_delivered = true  -- Set flag to snap ship
-				end
-			else
-				-- Reset timer if moved off pad
-				cargo.delivery_timer = nil
+			-- Deliver after delay
+			if cargo.delivery_timer >= Mission.CARGO_DELIVERY_DELAY then
+				cargo.state = "delivered"
+				cargo.was_delivered = true
+				Mission.cargo_just_delivered = true  -- Set flag to snap ship
 			end
 		else
 			-- Reset timer if conditions not met
