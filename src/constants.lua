@@ -24,4 +24,23 @@ Constants.SPRITE_PLANET = 21  -- Planet texture for menu background (64x32)
 Constants.SPRITE_CLOUDS = 22  -- Cloud layer texture for menu planet (64x32)
 Constants.SPRITE_HEIGHTMAP = 64  -- Heightmap data source (128x128)
 
+-- Landing pad names
+Constants.LANDING_PAD_NAMES = {
+	[1] = "Landing Pad A"
+}
+
+-- Building names
+Constants.BUILDING_NAMES = {
+	"Warehouse Alpha",
+	"Cargo Depot",
+	"Storage Facility",
+	"Industrial Complex",
+	"Distribution Center",
+	"Logistics Hub",
+	"Supply Station",
+	"Freight Terminal",
+	"Operations Center",
+	"Command Tower"
+}
+
 return Constants

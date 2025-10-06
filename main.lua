@@ -1,6 +1,38 @@
--- UI toggles (EASY TO ADJUST!)
+-- PARAMETERS (EASY TO ADJUST!)
+
+-- UI toggles
 local show_debug = false
 local show_mission_ui = true
+local show_ship_collision_box = false  -- Toggle ship collision wireframe
+
+-- Ship collision box dimensions
+local SHIP_COLLISION_WIDTH = 1.5   -- Default width
+local SHIP_COLLISION_HEIGHT = 2.0  -- Default height
+local SHIP_COLLISION_DEPTH = 1.5   -- Default depth
+
+-- Ship collision box with cargo attached
+local SHIP_CARGO_COLLISION_WIDTH = 2.0   -- Width with cargo
+local SHIP_CARGO_COLLISION_HEIGHT = 8.0  -- Height with cargo
+local SHIP_CARGO_COLLISION_DEPTH = 2.0   -- Depth with cargo
+
+-- Function to get current ship collision dimensions
+local function get_ship_collision_dimensions(cargo_objects)
+	local has_attached_cargo = false
+	if cargo_objects then
+		for cargo in all(cargo_objects) do
+			if cargo.state == "attached" then
+				has_attached_cargo = true
+				break
+			end
+		end
+	end
+
+	if has_attached_cargo then
+		return SHIP_CARGO_COLLISION_WIDTH, SHIP_CARGO_COLLISION_HEIGHT, SHIP_CARGO_COLLISION_DEPTH
+	else
+		return SHIP_COLLISION_WIDTH, SHIP_COLLISION_HEIGHT, SHIP_COLLISION_DEPTH
+	end
+end
 
 -- Load modules
 local load_obj = include("src/obj_loader.lua")
@@ -17,6 +49,7 @@ local Ship = include("src/ship.lua")
 local Building = include("src/building.lua")
 local Cargo = include("src/cargo.lua")
 local Mission = include("src/mission.lua")
+local Missions = include("src/missions.lua")
 local Menu = include("src/menu.lua")
 
 -- Import sprite constants for easy reference
@@ -237,6 +270,7 @@ local pad_depth = pad_max_z - pad_min_z
 -- Pad 1: Main spawn pad
 local landing_pad_1 = LandingPads.create_pad({
 	id = 1,
+	name = Constants.LANDING_PAD_NAMES[1],
 	x = 5,
 	z = -3,
 	mesh = landing_pad_mesh,
@@ -362,6 +396,15 @@ local camera = {
 	ry = 0,  -- rotation around Y axis
 }
 
+-- Store initial camera state for menu
+local initial_camera_state = {
+	x = camera.x,
+	y = camera.y,
+	z = camera.z,
+	rx = camera.rx,
+	ry = camera.ry
+}
+
 -- Mouse drag state for camera control
 local mouse_drag = {
 	active = false,
@@ -457,6 +500,8 @@ local speed_line_timer = 0
 -- Repair system
 local repair_timer = 0  -- Time ship has been stationary on landing pad
 local is_on_landing_pad = false  -- Track if ship is on a landing pad
+local current_landing_pad = nil  -- Currently occupied landing pad (nil if none)
+local current_building = nil  -- Currently landed building (nil if none)
 
 local function spawn_speed_line(ship)
 	-- Calculate ship speed
@@ -534,22 +579,9 @@ local function start_mission(mission_num)
 	death_timer = 0
 	smoke_spawn_timer = 0
 
-	-- Start mission based on number
+	-- Start mission using missions module
 	Mission.reset()
-	if mission_num == 1 then
-		-- Get landing pad position for mission 1
-		local pad_x, pad_y, pad_z = LandingPads.get_spawn(1)
-		-- Mission 1: Simple tutorial - pick up cargo 100 meters west of landing pad
-		-- Convert world coords to Aseprite coords: aseprite = (world / 4) + 64
-		local cargo_world_x = pad_x - 10  -- 10 units west = 100 meters
-		local cargo_world_z = pad_z
-		local cargo_aseprite_x = (cargo_world_x / 4) + 64
-		local cargo_aseprite_z = (cargo_world_z / 4) + 64
-		Mission.start_cargo_mission({
-			{aseprite_x = cargo_aseprite_x, aseprite_z = cargo_aseprite_z}
-		}, pad_x or 0, pad_z or 0)
-	end
-	-- Add more missions here as they're created
+	Missions.start(mission_num, Mission)
 
 	Menu.active = false
 end
@@ -632,6 +664,12 @@ function _update()
 			Mission.show_pause_menu = false
 			Menu.active = true
 			Menu.init()
+			-- Reset camera to initial menu state
+			camera.x = initial_camera_state.x
+			camera.y = initial_camera_state.y
+			camera.z = initial_camera_state.z
+			camera.rx = initial_camera_state.rx
+			camera.ry = initial_camera_state.ry
 		end
 		last_q_state = key("q")
 		return  -- Don't update game while paused
@@ -640,11 +678,17 @@ function _update()
 
 	-- Handle mission complete screen
 	if Mission.complete_flag then
-		-- Any key press returns to menu
-		if stat(28) > 0 then  -- Check if any key was pressed
+		-- Q key returns to menu
+		if key("q") then
 			Mission.reset()
 			Menu.active = true
 			Menu.init()
+			-- Reset camera to initial menu state
+			camera.x = initial_camera_state.x
+			camera.y = initial_camera_state.y
+			camera.z = initial_camera_state.z
+			camera.rx = initial_camera_state.rx
+			camera.ry = initial_camera_state.ry
 		end
 		return  -- Don't update game while showing complete screen
 	end
@@ -940,6 +984,12 @@ function _update()
 
 	-- Building collision (check for rooftop landings and side collisions)
 	local ground_height = 0  -- Track the highest surface beneath the VTOL
+	current_building = nil  -- Reset current building
+
+	-- Get ship collision dimensions based on cargo state
+	local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
+	local ship_half_width = ship_width / 2
+	local ship_half_depth = ship_depth / 2
 
 	for i, building in ipairs(buildings) do
 		-- Get building bounds (using config for accurate dimensions)
@@ -949,8 +999,12 @@ function _update()
 			local half_depth = config.depth
 			local building_height = config.height * 2  -- Height is scaled by 2 in vertex generation
 
+			-- Expand building bounds by ship's half-dimensions for proper collision
+			local expanded_half_width = half_width + ship_half_width
+			local expanded_half_depth = half_depth + ship_half_depth
+
 			-- Check if VTOL is within building's horizontal bounds using Collision module
-			if Collision.point_in_box(vtol.x, vtol.z, building.x, building.z, half_width, half_depth) then
+			if Collision.point_in_box(vtol.x, vtol.z, building.x, building.z, expanded_half_width, expanded_half_depth) then
 				-- VTOL is horizontally above/inside this building
 				local building_top = building.y + building_height
 				local building_bottom = building.y
@@ -980,7 +1034,10 @@ function _update()
 					vtol.vz *= 0.5
 				elseif vtol.y >= building_top then
 					-- Above building - rooftop is a potential landing surface
-					ground_height = max(ground_height, building_top)
+					if building_top > ground_height then
+						ground_height = building_top
+						current_building = building  -- Track this building (will be checked later for landing)
+					end
 				end
 			end
 		end
@@ -1046,16 +1103,21 @@ function _update()
 		-- Dampen rotation when touching any surface
 		vtol.vpitch *= VTOL_GROUND_PITCH_DAMPING
 		vtol.vroll *= VTOL_GROUND_ROLL_DAMPING
+	else
+		-- Not grounded, clear building
+		current_building = nil
 	end
 
 	-- Check if ship is on landing pad and repair if stationary
 	is_on_landing_pad = false
+	current_landing_pad = nil
 	if landing_pad.collision and is_grounded then
 		local bounds = landing_pad.collision:get_bounds()
 		-- Check if ship is within landing pad horizontal bounds
 		if Collision.point_in_box(vtol.x, vtol.z, landing_pad.x, landing_pad.z, bounds.half_width, bounds.half_depth) then
 			-- Ship is on the landing pad
 			is_on_landing_pad = true
+			current_landing_pad = landing_pad
 
 			-- Calculate if ship is stationary (very low velocity)
 			local total_velocity = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
@@ -1175,10 +1237,32 @@ function _update()
 	local mouse_x, mouse_y, mouse_buttons = mouse()
 	local right_click_held = (mouse_buttons & 0x2) == 0x2
 
-	-- Check if ship is landed (low velocity and touching ground)
-	local is_landed = vtol.vy < 0.01 and vtol.vy > -0.01 and vtol.y < 2
+	-- Check if all engines are off
+	local engines_off = not vtol.thrusters[1].active and
+	                    not vtol.thrusters[2].active and
+	                    not vtol.thrusters[3].active and
+	                    not vtol.thrusters[4].active
 
-	Mission.update(delta_time, vtol.x, vtol.y, vtol.z, right_click_held, is_landed, vtol.pitch, vtol.yaw, vtol.roll)
+	-- Pass is_on_landing_pad status to mission for cargo delivery
+	Mission.update(delta_time, vtol.x, vtol.y, vtol.z, right_click_held, is_on_landing_pad, vtol.pitch, vtol.yaw, vtol.roll, engines_off)
+
+	-- Handle cargo delivery - snap ship to landed position without damage
+	if Mission.cargo_just_delivered then
+		Mission.cargo_just_delivered = false  -- Reset flag
+
+		-- Snap ship to proper landed position (level and on pad)
+		vtol.y = landing_height
+		vtol.pitch = 0
+		vtol.roll = 0
+
+		-- Zero all velocities
+		vtol.vx = 0
+		vtol.vy = 0
+		vtol.vz = 0
+		vtol.vpitch = 0
+		vtol.vyaw = 0
+		vtol.vroll = 0
+	end
 
 end
 
@@ -1338,6 +1422,22 @@ function _draw()
 		add(all_faces, f)
 	end
 
+	-- Draw ship collision box wireframe (if enabled)
+	if show_ship_collision_box then
+		local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
+
+		Collision.draw_wireframe(
+			camera,
+			vtol.x,
+			vtol.y,
+			vtol.z,
+			ship_width,
+			ship_height,
+			ship_depth,
+			11  -- Cyan for ship collision box
+		)
+	end
+
 	-- Special case: VTOL always renders in front when landed on a surface
 	-- Check if VTOL is within horizontal bounds of landing pad or any building
 	local vtol_on_surface = false
@@ -1421,17 +1521,51 @@ function _draw()
 		end
 	end
 
-	-- Control hints (left side)
-	local hint_x, hint_y = 2, 132
-	print("CONTROLS:", hint_x, hint_y, 7)
-	hint_y += 10
-	print("Space: All thrusters", hint_x, hint_y, 6)
-	hint_y += 8
-	print("N:     Left+Right", hint_x, hint_y, 6)
-	hint_y += 8
-	print("M:     Front+Back", hint_x, hint_y, 6)
-	hint_y += 8
-	print("Shift: Auto-level", hint_x, hint_y, 6)
+	-- Landing pad/building name indicator (show when on landing pad or building rooftop)
+	-- Position above compass (compass is at y=240)
+	if current_landing_pad then
+		local pad_text = "At " .. current_landing_pad.name
+		local text_width = #pad_text * 4  -- Approximate text width
+		local text_x = 240 - text_width / 2  -- Center horizontally
+		local text_y = 218  -- Above compass
+		-- Shadow
+		print(pad_text, text_x + 1, text_y + 1, 0)
+		-- Main text
+		print(pad_text, text_x, text_y, 7)
+	elseif current_building and current_building.name then
+		local building_text = "Rooftop: " .. current_building.name
+		local text_width = #building_text * 4  -- Approximate text width
+		local text_x = 240 - text_width / 2  -- Center horizontally
+		local text_y = 218  -- Above compass
+		-- Shadow
+		print(building_text, text_x + 1, text_y + 1, 0)
+		-- Main text
+		print(building_text, text_x, text_y, 7)
+	end
+
+	-- Control hints (left side) with outlines - only show when C is held
+	if key("c") then
+		local hint_x, hint_y = 2, 132
+		-- Outline
+		print("CONTROLS:", hint_x + 1, hint_y + 1, 0)
+		print("CONTROLS:", hint_x, hint_y, 7)
+		hint_y += 10
+		-- Outline
+		print("Space: All thrusters", hint_x + 1, hint_y + 1, 0)
+		print("Space: All thrusters", hint_x, hint_y, 6)
+		hint_y += 8
+		-- Outline
+		print("N:     Left+Right", hint_x + 1, hint_y + 1, 0)
+		print("N:     Left+Right", hint_x, hint_y, 6)
+		hint_y += 8
+		-- Outline
+		print("M:     Front+Back", hint_x + 1, hint_y + 1, 0)
+		print("M:     Front+Back", hint_x, hint_y, 6)
+		hint_y += 8
+		-- Outline
+		print("Shift: Auto-level", hint_x + 1, hint_y + 1, 0)
+		print("Shift: Auto-level", hint_x, hint_y, 6)
+	end
 
 	-- -- Debug: show button states
 	-- local w_state = key("w") and "W" or "-"
@@ -1525,15 +1659,17 @@ function _draw()
 	-- Draw 3D compass (cross/diamond shape with red and grey arrows)
 	-- Side view: <> (diamond), Front view: X (cross)
 	-- Two red arrows (north/south axis) and two grey arrows (east/west axis)
-	local compass_x = 240  -- Center of screen
+	local compass_x = 230-- Left of center by 30 pixels
 	local compass_y = 240  -- Bottom middle
 	local compass_size = 12
 
-	-- Black box background for compass and altitude (4 pixels wider, 8 pixels less tall)
-	local box_x1 = compass_x - compass_size - 3
-	local box_y1 = compass_y - compass_size + 1
-	local box_x2 = compass_x + 64
-	local box_y2 = compass_y + compass_size - 1
+	-- Black box background for compass and altitude (centered)
+	local box_width = 100  -- Total width to fit compass + altitude text
+	local box_height = 22  -- Height to fit compass
+	local box_x1 = compass_x - box_width / 2 + 20
+	local box_x2 = compass_x + box_width / 2 + 20
+	local box_y1 = compass_y - box_height / 2
+	local box_y2 = compass_y + box_height / 2
 	rectfill(box_x1, box_y1, box_x2, box_y2, 0)
 	rect(box_x1, box_y1, box_x2, box_y2, 7)  -- White border
 
@@ -1819,6 +1955,45 @@ function _draw()
 
 		-- Label
 		print("HEIGHTMAP (64)", debug_x, debug_y - 10, 11)
+	end
+
+	-- Debug: Show cargo state if cargo exists
+	if Mission.cargo_objects and #Mission.cargo_objects > 0 then
+		local debug_x = 10
+		local debug_y = 200
+		local y_offset = 0
+
+		print("=== CARGO DEBUG ===", debug_x, debug_y + y_offset, 11)
+		y_offset += 8
+
+		for i, cargo in ipairs(Mission.cargo_objects) do
+			print("Cargo " .. i .. ": " .. (cargo.state or "nil"), debug_x, debug_y + y_offset, 7)
+			y_offset += 8
+
+			-- Show distance from ship
+			if cargo.x and vtol.x then
+				local dx = cargo.x - vtol.x
+				local dz = cargo.z - vtol.z
+				local dist = sqrt(dx*dx + dz*dz) * 10  -- Convert to meters
+				print("  Dist: " .. flr(dist) .. "m", debug_x, debug_y + y_offset, 6)
+				y_offset += 8
+			end
+
+			-- Show delivery timer
+			if cargo.delivery_timer then
+				print("  Timer: " .. flr(cargo.delivery_timer * 10) / 10 .. "s", debug_x, debug_y + y_offset, 6)
+				y_offset += 8
+			end
+		end
+
+		-- Show engines off and on pad status
+		local engines_off = not vtol.thrusters[1].active and
+		                    not vtol.thrusters[2].active and
+		                    not vtol.thrusters[3].active and
+		                    not vtol.thrusters[4].active
+		print("Engines off: " .. (engines_off and "YES" or "NO"), debug_x, debug_y + y_offset, 6)
+		y_offset += 8
+		print("On pad: " .. (is_on_landing_pad and "YES" or "NO"), debug_x, debug_y + y_offset, 6)
 	end
 
 	-- Show death overlay (rendered on top of everything)

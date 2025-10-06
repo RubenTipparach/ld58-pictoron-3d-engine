@@ -11,10 +11,11 @@ local Collision = include("src/collision.lua")
 LandingPads.pads = {}
 
 -- Create a new landing pad
--- @param config: {id, x, z, mesh, scale, sprite, collision_dims, collision_y_offset}
+-- @param config: {id, name, x, z, mesh, scale, sprite, collision_dims, collision_y_offset}
 -- @return landing pad object
 function LandingPads.create_pad(config)
 	local id = config.id or (#LandingPads.pads + 1)
+	local name = config.name or "Landing Pad " .. id
 	local x = config.x or 0
 	local z = config.z or 0
 	local mesh = config.mesh
@@ -52,6 +53,7 @@ function LandingPads.create_pad(config)
 
 	local pad = {
 		id = id,
+		name = name,
 		x = x,
 		y = terrain_height,  -- Place on terrain
 		z = z,

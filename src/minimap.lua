@@ -121,18 +121,43 @@ function Minimap.draw(camera, vtol, buildings, building_configs, landing_pad, he
 	-- Draw landing pad on minimap (2x2 pixels for visibility)
 	local pad_x = Minimap.X + Minimap.SIZE / 2 + landing_pad.x * pixels_per_world_unit
 	local pad_y = Minimap.Y + Minimap.SIZE / 2 + landing_pad.z * pixels_per_world_unit
-	-- Draw as 2x2 white square for better visibility
-	rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 7)  -- White 2x2 pixels
 
-	-- Draw cargo objects on minimap
+	-- Check if any cargo is attached (flash landing pad when cargo collected)
+	local cargo_attached = false
 	if cargo_objects then
 		for cargo in all(cargo_objects) do
-			-- Only draw if not attached to ship
-			if cargo.state ~= "attached" and cargo.state ~= "delivered" then
-				local cargo_minimap_x = Minimap.X + Minimap.SIZE / 2 + cargo.x * pixels_per_world_unit
-				local cargo_minimap_y = Minimap.Y + Minimap.SIZE / 2 + cargo.z * pixels_per_world_unit
-				-- Draw as 2x2 orange square for visibility
-				rectfill(cargo_minimap_x - 1, cargo_minimap_y - 1, cargo_minimap_x, cargo_minimap_y, 9)  -- Orange
+			if cargo.state == "attached" then
+				cargo_attached = true
+				break
+			end
+		end
+	end
+
+	-- Flash landing pad when cargo is attached, otherwise solid white
+	if cargo_attached then
+		-- Flash at 4Hz (faster than cargo)
+		if (time() * 4) % 1 < 0.5 then
+			rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 11)  -- Cyan flash
+		else
+			rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 7)   -- White
+		end
+	else
+		-- Solid white when no cargo attached
+		rectfill(pad_x - 1, pad_y - 1, pad_x, pad_y, 7)  -- White 2x2 pixels
+	end
+
+	-- Draw cargo objects on minimap (blinking)
+	if cargo_objects then
+		-- Blink at 2Hz (on for 0.25s, off for 0.25s)
+		if (time() * 2) % 1 < 0.5 then
+			for cargo in all(cargo_objects) do
+				-- Only draw if not attached to ship
+				if cargo.state ~= "attached" and cargo.state ~= "delivered" then
+					local cargo_minimap_x = Minimap.X + Minimap.SIZE / 2 + cargo.x * pixels_per_world_unit
+					local cargo_minimap_y = Minimap.Y + Minimap.SIZE / 2 + cargo.z * pixels_per_world_unit
+					-- Draw as 2x2 orange square for visibility
+					rectfill(cargo_minimap_x - 1, cargo_minimap_y - 1, cargo_minimap_x, cargo_minimap_y, 9)  -- Orange
+				end
 			end
 		end
 	end

@@ -4,6 +4,11 @@ local Heightmap = include("src/heightmap.lua")
 
 local Cargo = {}
 
+-- Cargo attachment configuration (EASY TO ADJUST!)
+Cargo.MOUNT_OFFSET_X = 0    -- X offset from ship center when attached
+Cargo.MOUNT_OFFSET_Y = -0.8 -- Y offset (negative = below ship, along down vector)
+Cargo.MOUNT_OFFSET_Z = 0    -- Z offset from ship center when attached
+
 -- Convert Aseprite coordinates (0,0 at top-left, 128,128 at bottom-right)
 -- to world coordinates (centered at origin)
 -- Aseprite coords: (0,0) = top-left, (128,128) = bottom-right
@@ -79,15 +84,14 @@ function Cargo.create(config)
 		aseprite_x = aseprite_x,
 		aseprite_z = aseprite_z,
 		collected = false,
-		state = "idle",  -- States: "idle", "hovering", "tethering", "attached", "delivered", "falling"
+		state = "idle",  -- States: "idle", "tethering", "attached", "delivered"
 		hover_distance = 5,  -- Distance to show prompt (5 world units = 50 meters)
 		attach_distance = 0.3,  -- Distance to attach (0.3 world units = 3 meters)
-		tether_speed = 1.0,  -- Movement speed when tethering (1.0 world units = 10 m/s)
-		max_tether_distance = 10,  -- Maximum tether distance (10 units = 100 meters)
+		tether_speed = 5.0,  -- Movement speed when tethering (5.0 world units = 50 m/s)
 		bob_offset = 0,  -- For floating animation
 		attached_to_ship = false,
-		-- Mount offset (EASY TO ADJUST!) - position relative to ship when attached
-		mount_offset = {x = 0, y = -1.5, z = 0},  -- Mounted to bottom via ship's down vector
+		-- Mount offset - position relative to ship when attached (configured at top of file)
+		mount_offset = {x = Cargo.MOUNT_OFFSET_X, y = Cargo.MOUNT_OFFSET_Y, z = Cargo.MOUNT_OFFSET_Z},
 		scale = 0.5,  -- 50% smaller
 		vy = 0,  -- Vertical velocity for falling physics
 		gravity = -9.8,  -- Gravity acceleration (m/s^2 = units/s^2)
@@ -114,32 +118,16 @@ function Cargo.update(cargo, delta_time, ship_x, ship_y, ship_z, right_click_hel
 		-- No bobbing or spinning
 		cargo.bob_offset = 0
 
-		-- Check if ship is hovering nearby
-		if dist_2d < cargo.hover_distance and abs(dy) < 0.5 then  -- 0.5 unit = 5 meters vertical
-			cargo.state = "hovering"
-		end
-
-	elseif cargo.state == "hovering" then
-		-- No bobbing or spinning
-		cargo.bob_offset = 0
-
-		-- Check if ship moved away
-		if dist_2d > cargo.hover_distance or abs(dy) > 1.2 then
-			cargo.state = "idle"
-		-- Check if right-click is held
-		elseif right_click_held then
+		-- Auto-pickup when within range (no right-click needed)
+		if dist_3d < cargo.hover_distance then
 			cargo.state = "tethering"
-			cargo.vy = 0  -- Reset vertical velocity when starting tether
+			cargo.vy = 0
 		end
 
 	elseif cargo.state == "tethering" then
-		-- Check if ship moved too far away (>100m), break tether
-		if dist_3d > cargo.max_tether_distance then
-			cargo.state = "falling"
-			cargo.vy = 0  -- Start falling from current position
-		-- Move towards ship
-		elseif dist_3d > cargo.attach_distance then
-			-- Normalize direction and move at 10 m/s
+		-- Move towards ship at 50 m/s
+		if dist_3d > cargo.attach_distance then
+			-- Normalize direction and move at 50 m/s
 			local dir_x = dx / dist_3d
 			local dir_y = dy / dist_3d
 			local dir_z = dz / dist_3d
@@ -157,52 +145,38 @@ function Cargo.update(cargo, delta_time, ship_x, ship_y, ship_z, right_click_hel
 			cargo.collected = true  -- Mark as collected
 		end
 
-		-- If right-click released, drop and start falling
-		if not right_click_held then
-			cargo.state = "falling"
-			cargo.vy = 0  -- Start with no vertical velocity
-		end
-
-	elseif cargo.state == "falling" then
-		-- Apply gravity
-		cargo.vy += cargo.gravity * delta_time
-		cargo.y += cargo.vy * delta_time
-
-		-- Check if hit ground
-		if cargo.y <= cargo.base_y then
-			cargo.y = cargo.base_y
-			cargo.vy = 0
-			cargo.state = "idle"
-		end
-
-		-- Check if ship is nearby to re-tether
-		if dist_2d < cargo.hover_distance and abs(dy) < 1.2 then
-			cargo.state = "hovering"
-			cargo.vy = 0
-		end
-
 	elseif cargo.state == "attached" then
-		-- Calculate ship's down vector from rotation
+		-- Transform mount offset by ship rotation
 		ship_pitch = ship_pitch or 0
 		ship_yaw = ship_yaw or 0
 		ship_roll = ship_roll or 0
 
-		-- Ship's local down direction (0, -1, 0) rotated by ship orientation
-		-- Apply pitch rotation (X axis)
-		local cos_pitch, sin_pitch = cos(ship_pitch), sin(ship_pitch)
-		local down_y_pitch = -cos_pitch
-		local down_z_pitch = sin_pitch
+		local offset_x = cargo.mount_offset.x
+		local offset_y = cargo.mount_offset.y
+		local offset_z = cargo.mount_offset.z
 
-		-- Apply yaw rotation (Y axis)
+		-- Apply yaw rotation (Y axis) to offset
 		local cos_yaw, sin_yaw = cos(ship_yaw), sin(ship_yaw)
-		local down_x = 0
-		local down_y = down_y_pitch
-		local down_z = down_z_pitch
+		local x_yaw = offset_x * cos_yaw - offset_z * sin_yaw
+		local z_yaw = offset_x * sin_yaw + offset_z * cos_yaw
+		local y_yaw = offset_y
 
-		-- Position cargo along ship's down vector with mount offset
-		cargo.x = ship_x + down_x * cargo.mount_offset.y + cargo.mount_offset.x
-		cargo.y = ship_y + down_y * cargo.mount_offset.y
-		cargo.z = ship_z + down_z * cargo.mount_offset.y + cargo.mount_offset.z
+		-- Apply pitch rotation (X axis) to offset
+		local cos_pitch, sin_pitch = cos(ship_pitch), sin(ship_pitch)
+		local x_pitch = x_yaw
+		local y_pitch = y_yaw * cos_pitch - z_yaw * sin_pitch
+		local z_pitch = y_yaw * sin_pitch + z_yaw * cos_pitch
+
+		-- Apply roll rotation (Z axis) to offset
+		local cos_roll, sin_roll = cos(ship_roll), sin(ship_roll)
+		local x_final = x_pitch * cos_roll - y_pitch * sin_roll
+		local y_final = x_pitch * sin_roll + y_pitch * cos_roll
+		local z_final = z_pitch
+
+		-- Position cargo at ship position + rotated offset
+		cargo.x = ship_x + x_final
+		cargo.y = ship_y + y_final
+		cargo.z = ship_z + z_final
 
 		-- Match ship rotation
 		cargo.pitch = ship_pitch

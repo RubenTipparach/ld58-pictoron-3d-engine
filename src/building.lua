@@ -54,8 +54,8 @@ local function generate_nineslice_uvs(width, height, sprite_size)
 end
 
 -- Create a building object
--- config: {x, z, width, depth, height, use_heightmap, side_sprite}
--- Returns: {verts, faces, x, y, z, width, height, depth}
+-- config: {x, z, width, depth, height, use_heightmap, side_sprite, name, id}
+-- Returns: {verts, faces, x, y, z, width, height, depth, name}
 function Building.create(config)
 	local x = config.x
 	local z = config.z
@@ -64,6 +64,8 @@ function Building.create(config)
 	local height = config.height
 	local use_heightmap = config.use_heightmap or false
 	local side_sprite = config.side_sprite or Constants.SPRITE_BUILDING_SIDE
+	local name = config.name
+	local id = config.id
 
 	-- Get terrain height if heightmap is enabled
 	local terrain_y = 0
@@ -127,7 +129,9 @@ function Building.create(config)
 		z = z,
 		width = width * 2,   -- Full width for collision
 		height = height * 2, -- Full height for collision
-		depth = depth * 2    -- Full depth for collision
+		depth = depth * 2,   -- Full depth for collision
+		name = name,
+		id = id
 	}
 end
 
@@ -137,8 +141,13 @@ end
 -- Returns: array of building objects
 function Building.create_city(configs, use_heightmap)
 	local buildings = {}
-	for _, config in ipairs(configs) do
+	for i, config in ipairs(configs) do
 		config.use_heightmap = use_heightmap
+		config.id = i
+		-- Assign name from constants if not already set
+		if not config.name and Constants.BUILDING_NAMES[i] then
+			config.name = Constants.BUILDING_NAMES[i]
+		end
 		add(buildings, Building.create(config))
 	end
 	return buildings

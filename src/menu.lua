@@ -170,7 +170,7 @@ function Menu.init()
 	-- Load mission progress from storage (or create default)
 	Menu.mission_progress = {
 		mission_1 = true,  -- Mission 1 unlocked by default
-		mission_2 = false,
+		mission_2 = true,  -- Mission 2 unlocked by default
 		mission_3 = false
 	}
 
@@ -178,7 +178,7 @@ function Menu.init()
 	local loaded_progress = fetch("/appdata/mission_progress.pod")
 	if loaded_progress then
 		Menu.mission_progress.mission_1 = loaded_progress.mission_1 or true  -- Mission 1 always unlocked
-		Menu.mission_progress.mission_2 = loaded_progress.mission_2 or false
+		Menu.mission_progress.mission_2 = loaded_progress.mission_2 or true  -- Mission 2 unlocked by default
 		Menu.mission_progress.mission_3 = loaded_progress.mission_3 or false
 	end
 
@@ -290,22 +290,41 @@ end
 function Menu.update_options()
 	Menu.options = {}
 
+	-- Mission 1
 	if Menu.mission_progress.mission_1 then
-		add(Menu.options, {text = "MISSION 1: CARGO RECOVERY", mission = 1})
+		add(Menu.options, {text = "MISSION 1: ENGINE TEST", mission = 1, locked = false})
+	else
+		add(Menu.options, {text = "MISSION 1: [LOCKED]", mission = 1, locked = true})
 	end
+
+	-- Mission 2
 	if Menu.mission_progress.mission_2 then
-		add(Menu.options, {text = "MISSION 2: [LOCKED]", mission = 2})
+		add(Menu.options, {text = "MISSION 2: CARGO DELIVERY", mission = 2, locked = false})
+	else
+		add(Menu.options, {text = "MISSION 2: [LOCKED]", mission = 2, locked = true})
 	end
+
+	-- Mission 3
 	if Menu.mission_progress.mission_3 then
-		add(Menu.options, {text = "MISSION 3: [LOCKED]", mission = 3})
+		add(Menu.options, {text = "MISSION 3: [LOCKED]", mission = 3, locked = false})
+	else
+		add(Menu.options, {text = "MISSION 3: [LOCKED]", mission = 3, locked = true})
 	end
 
-	add(Menu.options, {text = "RESET PROGRESS", action = "reset"})
-	add(Menu.options, {text = "QUIT", action = "quit"})
+	add(Menu.options, {text = "RESET PROGRESS", action = "reset", locked = false})
+	add(Menu.options, {text = "QUIT", action = "quit", locked = false})
 
-	-- Clamp selected option
+	-- Clamp selected option and skip locked options
 	if Menu.selected_option > #Menu.options then
 		Menu.selected_option = #Menu.options
+	end
+
+	-- Make sure we start on an unlocked option
+	while Menu.options[Menu.selected_option] and Menu.options[Menu.selected_option].locked do
+		Menu.selected_option += 1
+		if Menu.selected_option > #Menu.options then
+			Menu.selected_option = 1
+		end
 	end
 end
 
@@ -345,11 +364,25 @@ function Menu.update(delta_time)
 		if Menu.selected_option < 1 then
 			Menu.selected_option = #Menu.options
 		end
+		-- Skip locked options
+		while Menu.options[Menu.selected_option].locked do
+			Menu.selected_option -= 1
+			if Menu.selected_option < 1 then
+				Menu.selected_option = #Menu.options
+			end
+		end
 	end
 	if btnp(3) then  -- Down
 		Menu.selected_option += 1
 		if Menu.selected_option > #Menu.options then
 			Menu.selected_option = 1
+		end
+		-- Skip locked options
+		while Menu.options[Menu.selected_option].locked do
+			Menu.selected_option += 1
+			if Menu.selected_option > #Menu.options then
+				Menu.selected_option = 1
+			end
 		end
 	end
 
@@ -362,6 +395,11 @@ end
 -- Select current menu option
 function Menu.select_option()
 	local option = Menu.options[Menu.selected_option]
+
+	-- Don't allow selecting locked options
+	if option.locked then
+		return nil
+	end
 
 	if option.mission then
 		-- Start mission
@@ -446,8 +484,7 @@ function Menu.draw(camera, render_mesh_func)
 		end
 	end
 
-	-- Render planet with extended draw distance
-	local all_faces = {}
+	-- Render planet in background (draw first, always behind everything)
 	local planet_sorted = render_mesh_func(
 		Menu.planet.verts,
 		Menu.planet.faces,
@@ -458,11 +495,10 @@ function Menu.draw(camera, render_mesh_func)
 		PLANET_PITCH, PLANET_YAW + Menu.planet.rotation, PLANET_ROLL,
 		MENU_RENDER_DISTANCE  -- Extended render distance for space scene
 	)
-	for _, f in ipairs(planet_sorted) do
-		add(all_faces, f)
-	end
+	Renderer.sort_faces(planet_sorted)
+	Renderer.draw_faces(planet_sorted, false)
 
-	-- Render cloud sphere with dithering
+	-- Render cloud sphere with dithering (drawn after planet, always in front)
 	fillp(0b0101101001011010)  -- 50% dither pattern
 	local cloud_sorted = render_mesh_func(
 		Menu.clouds.verts,
@@ -474,10 +510,12 @@ function Menu.draw(camera, render_mesh_func)
 		PLANET_PITCH, PLANET_YAW + Menu.clouds.rotation, PLANET_ROLL,
 		MENU_RENDER_DISTANCE  -- Extended render distance for space scene
 	)
-	for _, f in ipairs(cloud_sorted) do
-		add(all_faces, f)
-	end
+	Renderer.sort_faces(cloud_sorted)
+	Renderer.draw_faces(cloud_sorted, false)
 	fillp()  -- Reset fill pattern
+
+	-- Collect other faces (space lines, ship, flames)
+	local all_faces = {}
 
 	-- Render ship in foreground with thrusters firing
 	if Menu.ship_mesh and #Menu.ship_mesh.verts > 0 then
@@ -598,7 +636,14 @@ function Menu.draw(camera, render_mesh_func)
 
 	-- Draw options
 	for i, option in ipairs(Menu.options) do
-		local color = (i == Menu.selected_option) and 11 or 6
+		local color
+		if option.locked then
+			color = 5  -- Grey for locked options
+		elseif i == Menu.selected_option then
+			color = 11  -- Cyan for selected
+		else
+			color = 6  -- Dark grey for unselected
+		end
 		local prefix = (i == Menu.selected_option) and "> " or "  "
 		print(prefix .. option.text, 80, menu_y + (i - 1) * 12, color)
 	end
