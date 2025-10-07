@@ -84,7 +84,7 @@ function Mission.start_hover_mission(hover_duration, landing_pad_x, landing_pad_
 		"Take off and hover for " .. hover_duration .. " seconds",
 		"Then land back on the pad",
 		"",
-		"[TAB] Menu  [G] Hide Mission  [HOLD C] Show Controls"
+		"[TAB] Menu  [G] Hide Mission  [C] Show Controls"
 	}
 end
 
@@ -134,7 +134,7 @@ function Mission.start_cargo_mission(cargo_coords, landing_pad_x, landing_pad_z,
 		"Collect all cargo and return to Landing Pad A",
 		"Cargo: 0/" .. Mission.total_cargo,
 		"Land with engines off to deliver",
-		"[TAB] Menu  [G] Hide Mission  [HOLD C] Show Controls"
+		"[TAB] Menu  [G] Hide Mission  [C] Show Controls"
 	}
 end
 

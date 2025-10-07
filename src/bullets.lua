@@ -14,7 +14,7 @@ Bullets.PLAYER_BULLET_SPEED = 20  -- Units per second
 Bullets.ENEMY_BULLET_SPEED = 12  -- Units per second
 Bullets.BULLET_SIZE = 0.2  -- Billboard size
 Bullets.BULLET_RANGE = 100  -- 200 meters max range
-Bullets.PLAYER_FIRE_RATE = 1  -- Bullets per second (0 = disabled)
+Bullets.PLAYER_FIRE_RATE = 4  -- Bullets per second (0 = disabled)
 Bullets.PLAYER_FIRE_COOLDOWN = Bullets.PLAYER_FIRE_RATE > 0 and (1 / Bullets.PLAYER_FIRE_RATE) or 999999
 
 -- Enemy firing configuration (EASY TO ADJUST!)

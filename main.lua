@@ -77,6 +77,12 @@ if level_music then
 	level_music:poke(level_music_addr)  -- Load music data to this address
 end
 
+local level2_music = fetch("sfx/secondlevelsong.sfx")
+local level2_music_addr = 0x100000  -- Use another address for second level music
+if level2_music then
+	level2_music:poke(level2_music_addr)  -- Load music data to this address
+end
+
 -- Set shared module references
 Mission.LandingPads = LandingPads
 -- Import sprite constants for easy reference
@@ -106,6 +112,10 @@ local last_escape_state = false
 local last_q_state = false
 local last_tab_state = false
 local last_g_state = false
+local last_c_state = false
+
+-- UI toggles
+local show_controls = false
 
 -- Ship Spawn Configuration (EASY TO ADJUST!)
 local SHIP_SPAWN_HEIGHT_OFFSET = -1 -- Height above landing pad surface (in world units, 1 unit = 10 meters)
@@ -150,10 +160,10 @@ local DAMAGE_BUILDING_MULTIPLIER = 100  -- Damage multiplier for building collis
 local DAMAGE_GROUND_MULTIPLIER = 300   -- Damage multiplier for ground impacts
 
 -- Rendering Configuration
-local RENDER_DISTANCE = 15  -- Far plane / fog distance
-local FOG_START_DISTANCE = 10  -- Distance where fog/fade begins (3m before render distance)
-local WEATHER_RENDER_DISTANCE = 10  -- Reduced render distance in weather
-local WEATHER_FOG_START_DISTANCE = 5  -- Fog starts closer in weather
+local RENDER_DISTANCE = 20  -- Far plane / fog distance
+local FOG_START_DISTANCE = 15  -- Distance where fog/fade begins (3m before render distance)
+local WEATHER_RENDER_DISTANCE = 12  -- Reduced render distance in weather
+local WEATHER_FOG_START_DISTANCE = 8  -- Fog starts closer in weather
 local DEBUG_SHOW_PHYSICS_WIREFRAME = false  -- Toggle physics collision wireframes
 local GROUND_ALWAYS_BEHIND = false  -- Force ground to render behind everything (depth bias)
 
@@ -745,6 +755,13 @@ local function start_mission(mission_num, mode)
 	-- Set game mode
 	game_mode = mode or "arcade"
 
+	-- Set controls visibility - show for mission 1, hide for others
+	if mission_num == 1 then
+		show_controls = true
+	else
+		show_controls = false
+	end
+
 	-- Reset VTOL state (spawn on landing pad 1)
 	local spawn_x, spawn_y, spawn_z, spawn_yaw = LandingPads.get_spawn(1)
 	spawn_y += SHIP_SPAWN_HEIGHT_OFFSET  -- Apply spawn height offset
@@ -786,6 +803,15 @@ local function start_mission(mission_num, mode)
 	current_game_state = GAME_STATE.PLAYING
 	death_timer = 0
 	smoke_spawn_timer = 0
+
+	-- Start level music at 50% volume
+	if mission_num == 5 and level2_music_addr then
+		-- Mission 5 uses second level song
+		music(1, nil, nil, level2_music_addr, 0.5)  -- Play pattern 0 from second level music at 50% volume
+	elseif level_music_addr then
+		-- All other missions use first level song
+		music(0, nil, nil, level_music_addr, 0.5)  -- Play pattern 0 from level music at 50% volume
+	end
 
 	-- Start mission using missions module
 	Mission.reset()
@@ -852,7 +878,7 @@ end
 
 -- Initialize menu at startup
 Menu.mission_testing = mission_testing
-Menu.init()
+Menu.init(level_music_addr)
 
 function _update()
 	-- Calculate delta time (time since last frame)
@@ -894,13 +920,19 @@ function _update()
 	end
 	last_tab_state = key("tab")
 
-	-- Toggle mission UI (G key) - but force show if mission complete
-	if Mission.complete_flag then
-		show_mission_ui = true  -- Force show when mission complete
+	-- Toggle mission UI (G key) - but force show if mission complete or in mission 1
+	if Mission.complete_flag or Mission.current_mission_num == 1 then
+		show_mission_ui = true  -- Force show when mission complete or in mission 1
 	elseif key("g") and not (last_g_state) then
 		show_mission_ui = not show_mission_ui
 	end
 	last_g_state = key("g")
+
+	-- Toggle controls display (C key)
+	if key("c") and not (last_c_state) then
+		show_controls = not show_controls
+	end
+	last_c_state = key("c")
 
 	-- Handle pause menu actions
 	if Mission.show_pause_menu then
@@ -911,7 +943,7 @@ function _update()
 			Mission.show_pause_menu = false
 			Menu.active = true
 			Menu.mission_testing = mission_testing
-			Menu.init()
+			Menu.init(level_music_addr)
 			-- Reset camera to initial menu state
 			camera.x = initial_camera_state.x
 			camera.y = initial_camera_state.y
@@ -932,7 +964,7 @@ function _update()
 			Weather.set_enabled(false)  -- Disable weather when mission complete
 			Menu.active = true
 			Menu.mission_testing = mission_testing
-			Menu.init()
+			Menu.init(level_music_addr)
 			-- Reset camera to initial menu state
 			camera.x = initial_camera_state.x
 			camera.y = initial_camera_state.y
@@ -997,8 +1029,10 @@ function _update()
 	-- Mouse camera control (drag-based rotation)
 	local mouse_x, mouse_y, mouse_buttons = mouse()
 	local left_button_down = mouse_buttons & 0x1 == 0x1
+	local right_button_down = mouse_buttons & 0x2 == 0x2
 
-	if left_button_down then
+	-- Left or right mouse button rotates camera
+	if left_button_down or right_button_down then
 		if not mouse_drag.active then
 			-- Start dragging - record initial position and current rotation
 			mouse_drag.active = true
@@ -1019,14 +1053,22 @@ function _update()
 		mouse_drag.active = false
 	end
 
-	-- -- Rotate with Z and X (slower)
-	-- local rot_speed = 0.005
-	-- if btn(4) then  -- Z button
-	-- 	camera.ry -= rot_speed
-	-- end
-	-- if btn(5) then  -- X button
-	-- 	camera.ry += rot_speed
-	-- end
+	-- Rotate camera with arrow keys
+	local rot_speed = 0.01
+	-- if key("z") or key("left") then
+	if key("left") then
+		camera.ry -= rot_speed
+	end
+	-- if key("x") or key("right") then
+	if key("right") then
+		camera.ry += rot_speed
+	end
+	if key("up") then
+		camera.rx -= rot_speed * 0.6  -- Pitch up
+	end
+	if key("down") then
+		camera.rx += rot_speed * 0.6  -- Pitch down
+	end
 
 	-- -- Move camera with arrow keys (forward/back/strafe)
 	-- local move_speed = 0.05
@@ -1638,12 +1680,15 @@ function _update()
 		if dir_x then
 			-- Fire from turret position
 			local turret_x, turret_y, turret_z = Turret.get_position(vtol.x, vtol.y, vtol.z, vtol.pitch, vtol.yaw, vtol.roll)
-			Bullets.spawn_player_bullet(
+			local bullet = Bullets.spawn_player_bullet(
 				turret_x, turret_y, turret_z,
 				dir_x, dir_y, dir_z,
 				Turret.FIRE_RANGE
 			)
-			sfx(0)  -- Play shooting sound
+			-- Only play sound if bullet was actually spawned (not on cooldown)
+			if bullet then
+				sfx(0)  -- Play shooting sound
+			end
 		end
 	end
 
@@ -2190,8 +2235,8 @@ function _draw()
 		print(building_text, text_x, text_y, 7)
 	end
 
-	-- Control hints (left side) with outlines - only show when C is held
-	if key("c") then
+	-- Control hints (left side) with outlines - toggle with C or always show in mission 1
+	if show_controls or Mission.current_mission_num == 1 then
 		local hint_x, hint_y = 2, 132
 		-- Outline
 		print("CONTROLS:", hint_x + 1, hint_y + 1, 0)
@@ -2223,6 +2268,17 @@ function _draw()
 			print("No assists - manual flight!", hint_x + 1, hint_y + 1, 0)
 			print("No assists - manual flight!", hint_x, hint_y, 6)
 		end
+
+		hint_y += 10
+		-- Camera controls (shown in all modes)
+		print("CAMERA:", hint_x + 1, hint_y + 1, 0)
+		print("CAMERA:", hint_x, hint_y, 7)
+		hint_y += 10
+		print("Mouse/RMB: Drag to rotate", hint_x + 1, hint_y + 1, 0)
+		print("Mouse/RMB: Drag to rotate", hint_x, hint_y, 6)
+		hint_y += 8
+		print("Arrow Keys: Rotate camera", hint_x + 1, hint_y + 1, 0)
+		print("Arrow Keys: Rotate camera", hint_x, hint_y, 6)
 	end
 
 	-- -- Debug: show button states

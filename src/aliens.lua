@@ -8,7 +8,7 @@ end
 
 -- Alien configuration
 Aliens.FIGHTER_HEALTH = 100
-Aliens.MOTHER_SHIP_HEALTH = 500
+Aliens.MOTHER_SHIP_HEALTH = 1000
 Aliens.FIGHTER_SPEED = 2.0  -- Units per second
 Aliens.FIGHTER_FIRE_RATE = 2  -- Bullets per second
 Aliens.FIGHTER_FIRE_ARC = 0.125  -- 45 degrees (45/360 = 0.125)
