@@ -920,9 +920,9 @@ function _update()
 	end
 	last_tab_state = key("tab")
 
-	-- Toggle mission UI (G key) - but force show if mission complete or in mission 1
-	if Mission.complete_flag or Mission.current_mission_num == 1 then
-		show_mission_ui = true  -- Force show when mission complete or in mission 1
+	-- Toggle mission UI (G key) - but force show if mission complete
+	if Mission.complete_flag then
+		show_mission_ui = true  -- Force show when mission complete
 	elseif key("g") and not (last_g_state) then
 		show_mission_ui = not show_mission_ui
 	end

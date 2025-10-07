@@ -406,7 +406,16 @@ function Mission.draw_ui(camera, ship_x, ship_y, ship_z, minimap_y)
 	-- Draw objectives
 	if #Mission.current_objectives > 0 then
 		for i, objective in ipairs(Mission.current_objectives) do
-			print(objective, box_x + 5, text_y + (i - 1) * 8, 7)
+			-- Highlight first objective in hover missions (the timer)
+			if Mission.type == "hover" and i == 1 then
+				-- Draw background rectangle for timer
+				local text_width = #objective * 4
+				rectfill(box_x + 3, text_y + (i - 1) * 8 - 1, box_x + 7 + text_width, text_y + (i - 1) * 8 + 6, 1)
+				-- Draw timer text in bright yellow
+				print(objective, box_x + 5, text_y + (i - 1) * 8, 10)
+			else
+				print(objective, box_x + 5, text_y + (i - 1) * 8, 7)
+			end
 		end
 	else
 		-- Debug message when no objectives
