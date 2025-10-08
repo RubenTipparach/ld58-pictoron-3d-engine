@@ -96,11 +96,147 @@ function Heightmap.get_height(world_x, world_z)
 	return height
 end
 
--- Generate terrain mesh for a region around the camera
--- This creates a grid of vertices with heights from the heightmap
+-- Generate terrain tiles with bounding boxes for culling
+-- This creates individual tile meshes that can be culled separately
 -- @param cam_x, cam_z: camera position
 -- @param grid_count: number of tiles in each direction (default auto-calculated from render distance)
 -- @param render_distance: how far to render terrain (optional, default 20)
+-- @return tiles: array of {verts, faces, bounds={min_x, min_y, min_z, max_x, max_y, max_z}, center_x, center_z}
+function Heightmap.generate_terrain_tiles(cam_x, cam_z, grid_count, render_distance)
+	-- Auto-calculate grid_count based on render distance to optimize
+	render_distance = render_distance or 20
+	if not grid_count then
+		-- Calculate grid_count to cover the render distance
+		-- We want terrain that extends to the render distance
+		grid_count = flr(render_distance / Heightmap.TILE_SIZE) * 2  -- *2 to cover all directions
+		grid_count = min(grid_count, 32)  -- Cap at 32x32 for performance
+	end
+
+	local tiles = {}
+	local half_size = grid_count * Heightmap.TILE_SIZE / 2
+
+	-- Snap camera position to grid
+	local center_x = flr(cam_x / Heightmap.TILE_SIZE) * Heightmap.TILE_SIZE
+	local center_z = flr(cam_z / Heightmap.TILE_SIZE) * Heightmap.TILE_SIZE
+
+	-- Create individual tiles (each tile is one quad = 2 triangles)
+	for gz = 0, grid_count - 1 do
+		for gx = 0, grid_count - 1 do
+			local world_x1 = center_x + gx * Heightmap.TILE_SIZE - half_size
+			local world_z1 = center_z + gz * Heightmap.TILE_SIZE - half_size
+			local world_x2 = world_x1 + Heightmap.TILE_SIZE
+			local world_z2 = world_z1 + Heightmap.TILE_SIZE
+
+			-- Sample heights at 4 corners
+			local h1 = Heightmap.get_height(world_x1, world_z1)
+			local h2 = Heightmap.get_height(world_x2, world_z1)
+			local h3 = Heightmap.get_height(world_x2, world_z2)
+			local h4 = Heightmap.get_height(world_x1, world_z2)
+
+			-- Create vertices for this tile (4 corners)
+			local verts = {
+				vec(world_x1, h1, world_z1),  -- v1: top-left
+				vec(world_x2, h2, world_z1),  -- v2: top-right
+				vec(world_x2, h3, world_z2),  -- v3: bottom-right
+				vec(world_x1, h4, world_z2),  -- v4: bottom-left
+			}
+
+			-- Calculate bounding box and tile height
+			local min_y = min(h1, h2, h3, h4)
+			local max_y = max(h1, h2, h3, h4)
+			local tile_height = max_y - min_y  -- Height of the tile (0 for flat tiles)
+
+			local bounds = {
+				min_x = world_x1,
+				min_y = min_y,
+				min_z = world_z1,
+				max_x = world_x2,
+				max_y = max_y,
+				max_z = world_z2
+			}
+
+			-- Check if tile is flat
+			local is_flat = (h1 == h2 and h2 == h3 and h3 == h4)
+
+			-- Get tile coordinates for sprite selection
+			local tile_x1, tile_z1 = Heightmap.world_to_tile(world_x1, world_z1)
+			local tile_x2, tile_z2 = Heightmap.world_to_tile(world_x2, world_z2)
+
+			-- Sample heightmap values for sprite selection
+			local height_values = {}
+			if tile_x1 >= 0 and tile_x1 < Heightmap.MAP_SIZE and tile_z1 >= 0 and tile_z1 < Heightmap.MAP_SIZE then
+				add(height_values, heightmap_data[tile_z1 * Heightmap.MAP_SIZE + tile_x1])
+			end
+			if tile_x2 >= 0 and tile_x2 < Heightmap.MAP_SIZE and tile_z1 >= 0 and tile_z1 < Heightmap.MAP_SIZE then
+				add(height_values, heightmap_data[tile_z1 * Heightmap.MAP_SIZE + tile_x2])
+			end
+			if tile_x2 >= 0 and tile_x2 < Heightmap.MAP_SIZE and tile_z2 >= 0 and tile_z2 < Heightmap.MAP_SIZE then
+				add(height_values, heightmap_data[tile_z2 * Heightmap.MAP_SIZE + tile_x2])
+			end
+			if tile_x1 >= 0 and tile_x1 < Heightmap.MAP_SIZE and tile_z2 >= 0 and tile_z2 < Heightmap.MAP_SIZE then
+				add(height_values, heightmap_data[tile_z2 * Heightmap.MAP_SIZE + tile_x1])
+			end
+
+			-- Determine height value for sprite selection
+			local height_value = 0
+			if #height_values > 0 then
+				if is_flat then
+					height_value = height_values[1]
+				else
+					height_value = height_values[1]
+					for _, h in ipairs(height_values) do
+						if h < height_value then
+							height_value = h
+						end
+					end
+				end
+			end
+
+			-- Determine sprite
+			local is_water = (is_flat and height_value == 0)
+			local sprite_id
+			if is_water then
+				sprite_id = Constants.SPRITE_WATER
+			elseif height_value >= 10 then
+				sprite_id = Constants.SPRITE_ROCKS
+			elseif height_value >= 3 then
+				sprite_id = Constants.SPRITE_GRASS
+			else
+				sprite_id = Constants.SPRITE_GROUND
+			end
+
+			-- UV coordinates with 2x2 tiling
+			local uv_tl = vec(0, 0)
+			local uv_tr = vec(32, 0)
+			local uv_br = vec(32, 32)
+			local uv_bl = vec(0, 32)
+
+			-- Create faces (2 triangles for the quad)
+			local faces = {
+				{1, 2, 3, sprite_id, uv_tl, uv_tr, uv_br},
+				{1, 3, 4, sprite_id, uv_tl, uv_br, uv_bl}
+			}
+
+			-- Store tile with bounding box and height
+			add(tiles, {
+				verts = verts,
+				faces = faces,
+				bounds = bounds,
+				center_x = (world_x1 + world_x2) / 2,
+				center_z = (world_z1 + world_z2) / 2,
+				height = tile_height,  -- Height of terrain at this tile
+				max_y = max_y  -- Maximum Y coordinate
+			})
+		end
+	end
+
+	return tiles
+end
+
+-- Legacy function for backwards compatibility - generates single mesh
+-- @param cam_x, cam_z: camera position
+-- @param grid_count: number of tiles in each direction
+-- @param render_distance: how far to render terrain
 -- @return verts, faces: vertex and face arrays
 function Heightmap.generate_terrain(cam_x, cam_z, grid_count, render_distance)
 	-- Auto-calculate grid_count based on render distance to optimize

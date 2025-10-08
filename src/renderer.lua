@@ -3,6 +3,113 @@
 
 local Renderer = {}
 
+-- ============================================
+-- RENDER CONFIGURATION
+-- ============================================
+-- Dot product culling thresholds (normalized vectors, range -1 to 1)
+-- Lower values = more aggressive culling (cull more objects behind camera)
+-- dot = 1: directly in front, dot = 0: perpendicular, dot = -1: directly behind
+Renderer.DOT_CULL_TERRAIN = -0.1   -- Terrain can be culled more aggressively
+Renderer.DOT_CULL_OBJECTS = -1 -- Objects need wider FOV to avoid pop-in
+
+-- Simple distance culling for terrain tiles (much faster than full frustum test)
+-- Accounts for tile height - taller tiles can be seen from farther away
+-- Also culls tiles behind the camera using dot product
+-- @param center_x, center_z: tile center position in world space
+-- @param tile_height: height of the tile (max_y - min_y)
+-- @param camera: camera object with x,z,ry position
+-- @param render_distance: maximum render distance
+-- @return true if tile should be culled (too far away or behind camera)
+function Renderer.tile_distance_cull(center_x, center_z, tile_height, camera, render_distance)
+	local dx = center_x - camera.x
+	local dz = center_z - camera.z
+	local dist_sq = dx*dx + dz*dz
+
+	-- Increase render distance for tall tiles (they're visible from farther away)
+	-- Add 50% of tile height to render distance
+	local adjusted_distance = render_distance + (tile_height * 0.5)
+
+	-- Distance culling
+	if dist_sq > adjusted_distance * adjusted_distance then
+		return true
+	end
+
+	-- Camera-facing check using dot product
+	-- Calculate camera forward vector (direction camera is looking, including pitch)
+	local cam_forward_x = sin(camera.ry) * cos(camera.rx)
+	local cam_forward_y = -sin(camera.rx)  -- Negative because pitch is inverted
+	local cam_forward_z = cos(camera.ry) * cos(camera.rx)
+
+	-- Normalize camera forward vector
+	local cam_len = sqrt(cam_forward_x * cam_forward_x + cam_forward_y * cam_forward_y + cam_forward_z * cam_forward_z)
+	cam_forward_x = cam_forward_x / cam_len
+	cam_forward_y = cam_forward_y / cam_len
+	cam_forward_z = cam_forward_z / cam_len
+
+	-- Vector from camera to tile (already computed)
+	local to_tile_x = dx
+	local to_tile_y = 0  -- Use ground level for tiles (or could use tile center Y)
+	local to_tile_z = dz
+
+	-- Normalize to-tile vector
+	local tile_len = sqrt(to_tile_x * to_tile_x + to_tile_y * to_tile_y + to_tile_z * to_tile_z)
+	if tile_len > 0 then
+		to_tile_x = to_tile_x / tile_len
+		to_tile_y = to_tile_y / tile_len
+		to_tile_z = to_tile_z / tile_len
+	end
+
+	-- Dot product: if negative, tile is behind camera
+	local dot = cam_forward_x * to_tile_x + cam_forward_y * to_tile_y + cam_forward_z * to_tile_z
+
+	-- Cull if tile is behind camera threshold (configurable)
+	if dot < Renderer.DOT_CULL_TERRAIN then
+		return true
+	end
+
+	return false
+end
+
+-- Camera-facing culling for objects (buildings, ship, etc.)
+-- Uses normalized dot product to cull objects behind camera
+-- @param center_x, center_y, center_z: object center position in world space
+-- @param camera: camera object with x,y,z,rx,ry position
+-- @return true if object should be culled (behind camera)
+function Renderer.object_facing_cull(center_x, center_y, center_z, camera)
+	local dx = center_x - camera.x
+	local dy = center_y - camera.y
+	local dz = center_z - camera.z
+
+	-- Calculate camera forward vector (direction camera is looking, including pitch)
+	local cam_forward_x = sin(camera.ry) * cos(camera.rx)
+	local cam_forward_y = -sin(camera.rx)
+	local cam_forward_z = cos(camera.ry) * cos(camera.rx)
+
+	-- Normalize camera forward vector
+	local cam_len = sqrt(cam_forward_x * cam_forward_x + cam_forward_y * cam_forward_y + cam_forward_z * cam_forward_z)
+	cam_forward_x = cam_forward_x / cam_len
+	cam_forward_y = cam_forward_y / cam_len
+	cam_forward_z = cam_forward_z / cam_len
+
+	-- Normalize to-object vector
+	local obj_len = sqrt(dx * dx + dy * dy + dz * dz)
+	if obj_len > 0 then
+		dx = dx / obj_len
+		dy = dy / obj_len
+		dz = dz / obj_len
+	end
+
+	-- Dot product
+	local dot = cam_forward_x * dx + cam_forward_y * dy + cam_forward_z * dz
+
+	-- Cull if object is behind camera threshold (configurable)
+	if dot < Renderer.DOT_CULL_OBJECTS then
+		return true
+	end
+
+	return false
+end
+
 -- Scanline buffer for textured triangle rendering
 local scanlines = userdata("f64",11,270)
 
@@ -332,6 +439,10 @@ end
 function Renderer.draw_faces(all_faces, ship_flash_red, fog_enabled)
 	-- Default fog to enabled if not specified
 	if fog_enabled == nil then fog_enabled = true end
+
+	-- Enable transparency for color 0 (black) in sprites
+	palt(0, true)  -- Make color 0 transparent
+
 	-- Draw all faces in sorted order (reuse pooled userdata)
 	for _, f in ipairs(all_faces) do
 		local face = f.face
@@ -412,6 +523,7 @@ function Renderer.draw_faces(all_faces, ship_flash_red, fog_enabled)
 	end
 
 	fillp()  -- Reset fill pattern after drawing
+	palt()   -- Reset transparency to default
 end
 
 -- Bucket sort using depth bins (O(n) - hash faces by depth into buckets)

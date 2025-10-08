@@ -1,4 +1,7 @@
 --[[pod_format="raw",created="2024-04-09 22:52:04",modified="2024-04-10 20:35:05",revision=879]]
+-- Load UI utilities for print_shadow
+local UIUtils = include("src/ui_utils.lua")
+
 local function do_nothing() end
 
 -- The metatable here is to make profile() possible.
@@ -76,24 +79,30 @@ function profile.clear_lingers()
 end
 
 local function draw_cpu()
-	print("cpu:"..string.sub(stat(1)*100,1,5).."%",1,1,7)
+	-- Center of screen: 240 (horizontal center)
+	local x = 200
+	local y = 1
+	UIUtils.print_shadow("cpu:"..string.sub(stat(1)*100,1,5).."%", x, y, 11)
 end
 
 -- This draws the profiles, and then resets everything for the next frame.
 -- If it is not called, usage metrics will accumulate.
 -- Lingering profiles are always displayed after persistent profiles.
 local function display_profiles()
+	-- Center of screen horizontally: 240, start a bit lower for visibility
+	local x = 200
+	local y = 1
 	local i = 1
 	for prof in all(profiles) do
 		local usage = string.sub(prof.time*100,1,5).."%"
 		local to_print = prof.name..":"..usage
-		print(to_print,1,1+i*9,7)
+		UIUtils.print_shadow(to_print, x, y + i*9, 11)
 		i = i+1
 	end
 	for name,prof in pairs(lingers) do
 		local usage = string.sub(prof.time*100,1,5).."%"
 		local to_print = name..(prof.this_frame and "[X]:" or "[ ]:")..usage
-		print(to_print,1,1+i*9,7)
+		UIUtils.print_shadow(to_print, x, y + i*9, 11)
 		prof.this_frame = false
 		i = i+1
 	end
