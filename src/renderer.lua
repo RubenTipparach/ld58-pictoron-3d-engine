@@ -9,7 +9,7 @@ local Renderer = {}
 -- Dot product culling thresholds (normalized vectors, range -1 to 1)
 -- Lower values = more aggressive culling (cull more objects behind camera)
 -- dot = 1: directly in front, dot = 0: perpendicular, dot = -1: directly behind
-Renderer.DOT_CULL_TERRAIN = -0.1   -- Terrain can be culled more aggressively
+Renderer.DOT_CULL_TERRAIN = -0.5   -- Terrain can be culled more aggressively
 Renderer.DOT_CULL_OBJECTS = -1 -- Objects need wider FOV to avoid pop-in
 
 -- Simple distance culling for terrain tiles (much faster than full frustum test)
@@ -197,8 +197,9 @@ end
 -- @param ground_always_behind: apply depth bias to ground (optional, default true)
 -- @param fog_start_distance: distance at which fog starts (optional)
 -- @param is_skybox: skip pitch-based culling for skybox (optional)
+-- @param fog_enabled: whether fog is enabled (optional, default true)
 -- @return sorted_faces: array of faces ready to draw
-function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, ground_always_behind, fog_start_distance, is_skybox)
+function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, ground_always_behind, fog_start_distance, is_skybox, fog_enabled)
 	-- Projection parameters
 	local fov = 70  -- Field of view
 	local near = 0.01  -- Near clipping plane
@@ -359,7 +360,8 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 					-- Calculate fog opacity based on distance (0 = opaque, 1 = fully fogged)
 					-- Using exponential falloff for smoother fade
 					local fog_opacity = 0
-					if fog_start_distance then
+					-- Only calculate fog if fog is enabled (default true if not specified)
+					if (fog_enabled == nil or fog_enabled) and fog_start_distance then
 						-- For terrain/ground, use per-vertex depth instead of mesh distance
 						local face_dist = is_ground and avg_depth or obj_dist
 						if face_dist > fog_start_distance then
@@ -433,9 +435,7 @@ function Renderer.draw_faces(all_faces, ship_flash_red)
 		-- Apply linear fog dithering based on distance (applies to all sprites except skybox)
 		-- fog_level: 0 = no fog (opaque), 1 = full fog (transparent)
 		local fog_level = f.fog or 0
-		-- Get fog toggle state from global debug_toggles (if it exists)
-		local fog_enabled = not _ENV.debug_toggles or _ENV.debug_toggles.fog ~= false
-		if fog_level > 0 and not f.is_skybox and fog_enabled then
+		if fog_level > 0 and not f.is_skybox then
 			-- Higher fog_level = less visible (patterns FLIPPED - more 1s = MORE transparent!)
 			if fog_level > 0.875 then
 				fillp(0b0111111101111111)  -- Most 1s = most transparent (almost invisible)

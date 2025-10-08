@@ -52,6 +52,7 @@ local function get_ship_collision_dimensions(cargo_objects)
 end
 
 -- Load modules
+local Profiler = include("src/profiler.lua")
 local load_obj = include("src/obj_loader.lua")
 local ParticleSystem = include("src/particle_system.lua")
 local MathUtils = include("src/math_utils.lua")
@@ -897,7 +898,8 @@ local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_ov
 		effective_render_distance,
 		GROUND_ALWAYS_BEHIND,
 		effective_fog_distance,
-		is_skybox
+		is_skybox,
+		debug_toggles.fog  -- Pass fog toggle state
 	)
 end
 
@@ -1884,6 +1886,8 @@ function _draw()
 	-- Update FPS counter (count rendered frames)
   	current_fps = stat(7)
 
+	-- Reset profiler at start of frame
+	Profiler.reset()
 
 	-- Reset culling counters
 	objects_rendered = 0
@@ -1901,6 +1905,7 @@ function _draw()
 	local all_faces = {}
 
 	-- Render skybox (always at camera position, draws behind everything)
+	Profiler.start("render:skybox")
 	if debug_toggles.skybox then
 		local skybox_sorted
 		if Mission.current_mission_num == 6 then
@@ -1923,12 +1928,16 @@ function _draw()
 			add(all_faces, f)
 		end
 	end
+	Profiler.stop("render:skybox")
 
 	-- Generate terrain tiles with bounding boxes for culling
+	Profiler.start("terrain:gen")
 	local terrain_tiles_rendered = 0
 	local terrain_tiles_culled = 0
 	if debug_toggles.terrain then
 		local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
+		Profiler.stop("terrain:gen")
+		Profiler.start("render:terrain")
 
 		-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
 		local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
@@ -1956,9 +1965,13 @@ function _draw()
 				terrain_tiles_culled += 1
 			end
 		end
+		Profiler.stop("render:terrain")
+	else
+		Profiler.stop("terrain:gen")
 	end
 
 	-- Render all buildings
+	Profiler.start("render:buildings")
 	if debug_toggles.buildings then
 		for _, building in ipairs(buildings) do
 			local building_faces = render_mesh(
@@ -1978,8 +1991,10 @@ function _draw()
 			end
 		end
 	end
+	Profiler.stop("render:buildings")
 
 	-- Render all landing pads
+	Profiler.start("render:pads")
 	for _, pad in ipairs(LandingPads.get_all()) do
 		local pad_faces = render_mesh(
 			pad.verts,
@@ -1997,6 +2012,7 @@ function _draw()
 			add(all_faces, f)
 		end
 	end
+	Profiler.stop("render:pads")
 
 	-- Render all trees
 	for _, tree in ipairs(trees) do
@@ -2018,6 +2034,7 @@ function _draw()
 	end
 
 	-- Render all cargo objects (with animation and scaling)
+	Profiler.start("render:cargo")
 	for cargo in all(Mission.cargo_objects) do
 		-- Skip only if delivered (show when attached)
 		if cargo.state ~= "delivered" then
@@ -2044,6 +2061,7 @@ function _draw()
 			end
 		end
 	end
+	Profiler.stop("render:cargo")
 
 	-- Get sphere faces (floating above the city)
 	-- local sphere_sorted = render_mesh(sphere_verts, sphere_faces, 0, 5, 0)
@@ -2052,11 +2070,13 @@ function _draw()
 	-- end
 
 	-- Render smoke particles using particle system (camera-facing billboards)
+	Profiler.start("render:particles")
 	local smoke_faces = smoke_system:render(render_mesh, camera)
 	for _, f in ipairs(smoke_faces) do
 		f.is_vtol = true  -- Mark smoke as VTOL-related
 		add(all_faces, f)
 	end
+	Profiler.stop("render:particles")
 
 	-- Render bullets (ONLY FOR MISSION 6)
 	if Mission.current_mission_num == 6 then
@@ -2066,6 +2086,7 @@ function _draw()
 		end
 
 		-- Render aliens
+		Profiler.start("render:aliens")
 		for alien in all(Aliens.get_all()) do
 			local alien_mesh = alien.type == "fighter" and ufo_fighter_mesh or ufo_mother_mesh
 			if alien_mesh and alien_mesh.verts then
@@ -2088,6 +2109,7 @@ function _draw()
 				end
 			end
 		end
+		Profiler.stop("render:aliens")
 	end
 
 	-- Render turret (attached to ship, using proper mount position and quaternion rotation) (ONLY FOR MISSION 6)
@@ -2117,6 +2139,7 @@ function _draw()
 	-- Uncomment to enable turret debug visualization
 
 	-- Calculate if ship should flash (critically damaged)
+	Profiler.start("render:ship")
 	if debug_toggles.player_ship then
 		local health_percent = vtol.health / vtol.max_health
 		local use_damage_sprite = false
@@ -2148,6 +2171,7 @@ function _draw()
 			add(all_faces, f)
 		end
 	end
+	Profiler.stop("render:ship")
 
 	-- Draw ship collision box wireframe (if enabled)
 	if show_ship_collision_box then
@@ -2208,10 +2232,14 @@ function _draw()
 	end
 
 	-- Sort all faces using Renderer module
+	Profiler.start("render:sort")
 	Renderer.sort_faces(all_faces)
+	Profiler.stop("render:sort")
 
 	-- Draw all faces using Renderer module
+	Profiler.start("render:draw")
 	Renderer.draw_faces(all_faces, false)
+	Profiler.stop("render:draw")
 
 	-- Draw laser beam from turret (100m = 10 units) - simple red line - ALWAYS IN FRONT (ONLY FOR MISSION 6)
 	if Mission.current_mission_num == 6 and Turret.target then
@@ -2265,6 +2293,7 @@ function _draw()
 	end
 
 	-- Health bar
+	Profiler.start("ui:draw")
 	local health_bar_x = 2
 	local health_bar_y = 250
 	local health_bar_width = 100
@@ -2963,6 +2992,13 @@ function _draw()
 		print_shadow("6:Terrain "..(debug_toggles.terrain and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.terrain and 11 or 6)
 	end
 
+	-- Draw profiler display on left side (below controls)
+	if show_debug and debug_toggles.fps_info then
+		local profiler_x = 2
+		local profiler_y = 120  -- Below controls section
+		Profiler.draw(profiler_x, profiler_y, 10)
+	end
+
 
 	Mission.draw_pause_menu()
 
@@ -2970,4 +3006,5 @@ function _draw()
 	if Weather.enabled then
 		Weather.draw_rain_lines(camera, vtol)
 	end
+	Profiler.stop("ui:draw")
 end

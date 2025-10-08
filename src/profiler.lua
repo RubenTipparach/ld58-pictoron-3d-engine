@@ -1,127 +1,148 @@
---[[pod_format="raw",created="2024-04-09 22:52:04",modified="2024-04-10 20:35:05",revision=879]]
--- Load UI utilities for print_shadow
-local UIUtils = include("src/ui_utils.lua")
+-- Profiler module for performance tracking
+-- Tracks CPU time spent in different subsystems
 
-local function do_nothing() end
+local Profiler = {}
 
--- The metatable here is to make profile() possible.
--- Why use a table at all? Because otherwise lua will try to cache the function call,
--- which by default is do_nothing.
-local profile_meta = {__call = do_nothing}
-local profile = {draw = do_nothing}
-setmetatable(profile,profile_meta)
+-- Profiler state
+local enabled = true
+local timers = {}
+local timer_stack = {}
 
-local running = {} -- All incomplete profiles
- -- All complete profiles. Note that if the profiles haven't been drawn yet, it will
- -- not be cleared, and further profiles of the same name will add to the usage metric.
-local profiles = {}
--- All completed lingering profiles. These are never automatically cleared.
-local lingers = {}
+-- Reset all profiler timers
+function Profiler.reset()
+	timers = {}
+end
 
--- start_profile, stop_profile, and stop_linger are all internal functions,
--- serving as paths for _profile to take. Lingers share start_profile.
-local function start_profile(name,linger)
-	local source = profiles[name]
-	running[name] = {
-		start = stat(1),
-		linger = linger,
+-- Start timing a section
+function Profiler.start(name)
+	if not enabled then return end
+
+	local timer = {
+		name = name,
+		start_time = stat(1),  -- CPU time
+		parent = timer_stack[#timer_stack]
 	}
+
+	add(timer_stack, timer)
 end
 
-local function stop_profile(name,active,delta)
-	local profile = profiles[name]
-	if profile then
-		profile.time = delta+profile.time
-	else
-		profiles[name] = {
-			time = delta,
-			name = name,
-			precedence = active.precedence,
+-- End timing a section
+function Profiler.stop(name)
+	if not enabled then return end
+
+	if #timer_stack == 0 then
+		-- Error: no timer running
+		return
+	end
+
+	local timer = timer_stack[#timer_stack]
+	if timer.name != name then
+		-- Error: mismatched timer
+		return
+	end
+
+	-- Calculate elapsed time
+	local end_time = stat(1)
+	local elapsed = end_time - timer.start_time
+
+	-- Store in timers table
+	if not timers[name] then
+		timers[name] = {
+			total = 0,
+			count = 0,
+			avg = 0,
+			max = 0,
+			min = 999999
 		}
-		add(profiles,profiles[name])
 	end
+
+	local t = timers[name]
+	t.total += elapsed
+	t.count += 1
+	t.avg = t.total / t.count
+	t.max = max(t.max, elapsed)
+	t.min = min(t.min, elapsed)
+
+	-- Pop from stack
+	del(timer_stack, timer)
 end
 
-local function stop_linger(name,active,delta)
-	local profile = lingers[name]
-	if profile then
-		profile.time = profile.this_frame and delta+profile.time or delta
-		profile.this_frame = true
-	else
-		lingers[name] = {
-			time = delta,
-			this_frame = true,
-		}
+-- Get timing data for a section
+function Profiler.get(name)
+	return timers[name]
+end
+
+-- Get all timing data
+function Profiler.get_all()
+	return timers
+end
+
+-- Enable/disable profiler
+function Profiler.set_enabled(is_enabled)
+	enabled = is_enabled
+end
+
+-- Check if enabled
+function Profiler.is_enabled()
+	return enabled
+end
+
+-- Draw profiler display
+function Profiler.draw(x, y, max_entries)
+	if not enabled then return end
+
+	local cy = y
+	print_shadow = print_shadow or function(text, x, y, color)
+		print(text, x + 1, y + 1, 0)
+		print(text, x, y, color)
 	end
-end
 
--- The main functionality lives here.
--- Takes in the name of what you're profiling, and whether or not to
--- make the profile linger.
-local function _profile(_,name,linger)
-	local t = stat(1)
-	local active = running[name]
-	if active then
-		local delta = t-active.start
+	print_shadow("PROFILER (ms):", x, cy, 11)
+	cy += 10
 
-		if active.linger then stop_linger(name,active,delta)
-		else stop_profile(name,active,delta) end
-
-		running[name] = nil
-	else
-		start_profile(name,linger)
+	-- Sort by total time (descending)
+	local sorted = {}
+	for name, data in pairs(timers) do
+		add(sorted, {name=name, data=data})
 	end
-end
 
--- Clears all lingering profiles.
-function profile.clear_lingers()
-	lingers = {}
-end
-
-local function draw_cpu()
-	-- Center of screen: 240 (horizontal center)
-	local x = 200
-	local y = 1
-	UIUtils.print_shadow("cpu:"..string.sub(stat(1)*100,1,5).."%", x, y, 11)
-end
-
--- This draws the profiles, and then resets everything for the next frame.
--- If it is not called, usage metrics will accumulate.
--- Lingering profiles are always displayed after persistent profiles.
-local function display_profiles()
-	-- Center of screen horizontally: 240, start a bit lower for visibility
-	local x = 200
-	local y = 1
-	local i = 1
-	for prof in all(profiles) do
-		local usage = string.sub(prof.time*100,1,5).."%"
-		local to_print = prof.name..":"..usage
-		UIUtils.print_shadow(to_print, x, y + i*9, 11)
-		i = i+1
+	-- Simple bubble sort by total time
+	for i = 1, #sorted do
+		for j = i + 1, #sorted do
+			if sorted[j].data.total > sorted[i].data.total then
+				local temp = sorted[i]
+				sorted[i] = sorted[j]
+				sorted[j] = temp
+			end
+		end
 	end
-	for name,prof in pairs(lingers) do
-		local usage = string.sub(prof.time*100,1,5).."%"
-		local to_print = name..(prof.this_frame and "[X]:" or "[ ]:")..usage
-		UIUtils.print_shadow(to_print, x, y + i*9, 11)
-		prof.this_frame = false
-		i = i+1
+
+	-- Display entries
+	local count = 0
+	for entry in all(sorted) do
+		if max_entries and count >= max_entries then break end
+
+		local name = entry.name
+		local data = entry.data
+		local avg_ms = flr(data.avg * 1000 * 100) / 100
+		local max_ms = flr(data.max * 1000 * 100) / 100
+
+		-- Color based on time (red = slow, green = fast)
+		local color = 11  -- Default green
+		if avg_ms > 5 then
+			color = 8  -- Red
+		elseif avg_ms > 2 then
+			color = 9  -- Orange
+		elseif avg_ms > 1 then
+			color = 10  -- Yellow
+		end
+
+		print_shadow(name..": "..avg_ms, x, cy, color)
+		cy += 8
+		count += 1
 	end
-	profiles = {}
+
+	return cy
 end
 
-local function display_both()
-	draw_cpu()
-	display_profiles()
-end
-
--- This swaps out function calls depending on whether or not you want to have
--- profiling. This is to make it as much as possible so that you don't have to
--- think about cleaning up profile calls for efficiency.
--- The first boolean is for detailed profiling, the second is for CPU usage.
-function profile.enabled(detailed,cpu)
-	profile_meta.__call = detailed and _profile or do_nothing
-	profile.draw = detailed and (cpu and display_both or display_profiles)
-		or (cpu and draw_cpu or do_nothing)
-end
-
-return profile
+return Profiler
