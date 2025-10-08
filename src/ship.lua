@@ -53,7 +53,7 @@ end
 
 -- Load ship mesh from OBJ file
 function Ship:load_mesh()
-	local cross_lander_mesh = load_obj("cross_lander.obj")
+	local cross_lander_mesh = load_obj("ship_low_poly.obj")
 	local flame_mesh = load_obj("flame.obj")
 
 	-- Fallback to red cubes if OBJ loading fails

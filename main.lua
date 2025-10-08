@@ -592,6 +592,9 @@ local current_fps = 0
 local objects_rendered = 0
 local objects_culled = 0
 local last_time = time()
+local last_terrain_gen_time = 0
+local cached_terrain_tiles = {}
+local TERRAIN_GEN_RATE = 0.5  -- Generate terrain twice per second
 local delta_time = 0
 
 -- Pre-allocate userdata pool to avoid allocations per triangle
@@ -967,51 +970,64 @@ function _update()
 	end
 	last_c_state = key("c")
 
-	-- Debug menu toggles (number keys 1-7)
-	if key("1") and not (last_1_state) then
-		debug_toggles.player_ship = not debug_toggles.player_ship
-	end
-	last_1_state = key("1")
+	-- Debug menu toggles (number keys 1-9) - only work if show_debug is enabled
+	if show_debug then
+		if key("1") and not (last_1_state) then
+			debug_toggles.player_ship = not debug_toggles.player_ship
+		end
+		last_1_state = key("1")
 
-	if key("2") and not (last_2_state) then
-		debug_toggles.skybox = not debug_toggles.skybox
-	end
-	last_2_state = key("2")
+		if key("2") and not (last_2_state) then
+			debug_toggles.skybox = not debug_toggles.skybox
+		end
+		last_2_state = key("2")
 
-	if key("3") and not (last_3_state) then
-		debug_toggles.fog = not debug_toggles.fog
-	end
-	last_3_state = key("3")
+		if key("3") and not (last_3_state) then
+			debug_toggles.fog = not debug_toggles.fog
+		end
+		last_3_state = key("3")
 
-	if key("4") and not (last_4_state) then
-		debug_toggles.debug_stats = not debug_toggles.debug_stats
-	end
-	last_4_state = key("4")
+		if key("4") and not (last_4_state) then
+			debug_toggles.debug_stats = not debug_toggles.debug_stats
+		end
+		last_4_state = key("4")
 
-	if key("5") and not (last_5_state) then
-		debug_toggles.buildings = not debug_toggles.buildings
-	end
-	last_5_state = key("5")
+		if key("5") and not (last_5_state) then
+			debug_toggles.buildings = not debug_toggles.buildings
+		end
+		last_5_state = key("5")
 
-	if key("6") and not (last_6_state) then
-		debug_toggles.terrain = not debug_toggles.terrain
-	end
-	last_6_state = key("6")
+		if key("6") and not (last_6_state) then
+			debug_toggles.terrain = not debug_toggles.terrain
+		end
+		last_6_state = key("6")
 
-	if key("7") and not (last_7_state) then
-		debug_toggles.fx = not debug_toggles.fx
-	end
-	last_7_state = key("7")
+		if key("7") and not (last_7_state) then
+			debug_toggles.fx = not debug_toggles.fx
+		end
+		last_7_state = key("7")
 
-	if key("8") and not (last_8_state) then
-		debug_toggles.ui = not debug_toggles.ui
-	end
-	last_8_state = key("8")
+		if key("8") and not (last_8_state) then
+			debug_toggles.ui = not debug_toggles.ui
+		end
+		last_8_state = key("8")
 
-	if key("9") and not (last_9_state) then
-		debug_toggles.bbox = not debug_toggles.bbox
+		if key("9") and not (last_9_state) then
+			debug_toggles.bbox = not debug_toggles.bbox
+		end
+		last_9_state = key("9")
+	else
+		-- Reset last states when debug is off so keys work again when re-enabled
+		last_1_state = key("1")
+		last_2_state = key("2")
+		last_3_state = key("3")
+		last_4_state = key("4")
+		last_5_state = key("5")
+		last_6_state = key("6")
+		last_7_state = key("7")
+		last_8_state = key("8")
+		last_9_state = key("9")
 	end
-	last_9_state = key("9")
 
 	-- Handle pause menu actions
 	if Mission.show_pause_menu then
@@ -2704,13 +2720,19 @@ function _draw()
 	end
 	profile("render:skybox")
 
-	-- Generate terrain tiles with bounding boxes for culling
+	-- Generate terrain tiles with bounding boxes for culling (only twice per second)
 	local terrain_tiles_rendered = 0
 	local terrain_tiles_culled = 0
 	if debug_toggles.terrain then
-		profile("terrain:gen")
-		local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
-		profile("terrain:gen")
+		-- Only regenerate terrain twice per second
+		local current_time = time()
+		if current_time - last_terrain_gen_time >= TERRAIN_GEN_RATE then
+			profile("terrain:gen")
+			cached_terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
+			last_terrain_gen_time = current_time
+			profile("terrain:gen")
+		end
+		local terrain_tiles = cached_terrain_tiles
 
 		profile("render:terrain")
 		-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
