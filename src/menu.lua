@@ -1,6 +1,6 @@
 -- Menu module: Main menu with space background and mission selection
 local Constants = include("src/constants.lua")
-local Renderer = include("src/renderer.lua")
+local Renderer = include("engine/renderer.lua")
 
 -- Ship display settings (easy tweaking)
 -- Position
@@ -269,7 +269,7 @@ function Menu.init(menu_music_addr)
 	end
 
 	-- Load ship mesh (reuse from game)
-	local load_obj = include("src/obj_loader.lua")
+	local load_obj = include("engine/obj_loader.lua")
 	local ship_mesh = load_obj("cross_lander.obj")
 	if ship_mesh and #ship_mesh.verts > 0 then
 		Menu.ship_mesh = ship_mesh
