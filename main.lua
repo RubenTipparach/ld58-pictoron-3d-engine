@@ -57,6 +57,7 @@ end
 -- Load modules
 include("src/profiler.lua")
 profile.enabled(true, true)
+local Frustum = include("src/frustum.lua")
 local load_obj = include("src/obj_loader.lua")
 local ParticleSystem = include("src/particle_system.lua")
 local MathUtils = include("src/math_utils.lua")
@@ -878,12 +879,6 @@ local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_ov
 		local dist_sq = dx*dx + dz*dz
 
 		if dist_sq > effective_render_distance * effective_render_distance then
-			objects_culled += 1
-			return {}
-		end
-
-		-- Camera-facing culling (dot product)
-		if Renderer.object_facing_cull(obj_x, obj_y, obj_z, camera) then
 			objects_culled += 1
 			return {}
 		end
@@ -1893,429 +1888,8 @@ function _update()
 
 end
 
-function _draw()
-	-- Handle cutscene rendering
-	if Cutscene.active then
-		Cutscene.draw()
-		return
-	end
-
-	-- Handle menu rendering
-	if Menu.active then
-		Menu.draw(camera, render_mesh)
-		return
-	end
-
-	cls(5)  -- Background color index 6
-
-	-- Update FPS counter (count rendered frames)
-  	current_fps = stat(7)
-
-	-- Reset culling counters
-	objects_rendered = 0
-	objects_culled = 0
-
-	-- Apply weather overrides for fog and render distance
-	local effective_render_distance = RENDER_DISTANCE
-	local effective_fog_start = FOG_START_DISTANCE
-	if Weather.enabled then
-		effective_render_distance = WEATHER_RENDER_DISTANCE
-		effective_fog_start = WEATHER_FOG_START_DISTANCE
-	end
-
-	-- Collect all faces from all meshes
-	local all_faces = {}
-
-	-- Render skybox (always at camera position, draws behind everything)
-	profile("render:skybox")
-	if debug_toggles.skybox then
-		local skybox_sorted
-		if Mission.current_mission_num == 6 then
-			-- Mission 6: use special dome skybox with sprite 29 (64x32)
-			-- is_ground=true, is_skybox=true for special pitch-independent culling
-			skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true, nil, nil, nil, nil, nil, true)
-		else
-			-- Other missions: use regular skybox
-			local skybox_sprite = nil
-			if Weather.enabled then
-				-- Mission 5: use cloudy sky (sprite 23)
-				skybox_sprite = 23
-			end
-			skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true, nil, nil, nil, nil, nil, true)
-		end
-
-		for _, f in ipairs(skybox_sorted) do
-			f.depth = 999999  -- Push skybox to back (always draws behind)
-			f.is_skybox = true  -- Mark as skybox to exclude from fog
-			add(all_faces, f)
-		end
-	end
-	profile("render:skybox")
-
-	-- Generate terrain tiles with bounding boxes for culling
-	profile("terrain:gen")
-	local terrain_tiles_rendered = 0
-	local terrain_tiles_culled = 0
-	if debug_toggles.terrain then
-		local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
-		profile("terrain:gen")
-		profile("render:terrain")
-
-		-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
-		local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
-		local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
-
-		-- Render terrain tiles with distance culling
-		for _, tile in ipairs(terrain_tiles) do
-			-- Distance cull terrain tiles based on center point and height
-			-- Taller tiles are visible from farther away
-			if not Renderer.tile_distance_cull(tile.center_x, tile.center_z, tile.height, camera, effective_render_distance) then
-				-- Update water sprite on water faces
-				for _, face in ipairs(tile.faces) do
-					if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
-						face[4] = water_sprite
-					end
-				end
-
-				-- Render tile (each tile has its own verts/faces)
-				local tile_sorted = render_mesh(tile.verts, tile.faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
-				for _, f in ipairs(tile_sorted) do
-					add(all_faces, f)
-				end
-				terrain_tiles_rendered += 1
-			else
-				terrain_tiles_culled += 1
-			end
-		end
-		profile("render:terrain")
-	else
-		profile("terrain:gen")
-	end
-
-	-- Render all buildings
-	profile("render:buildings")
-	if debug_toggles.buildings then
-		for _, building in ipairs(buildings) do
-			local building_faces = render_mesh(
-				building.verts,
-				building.faces,
-				building.x,
-				building.y,
-				building.z,
-				building.sprite_override,
-				false,
-				nil, nil, nil,
-				effective_render_distance,
-				effective_fog_start
-			)
-			for _, f in ipairs(building_faces) do
-				add(all_faces, f)
-			end
-		end
-	end
-	profile("render:buildings")
-
-	-- Render all landing pads
-	profile("render:pads")
-	for _, pad in ipairs(LandingPads.get_all()) do
-		local pad_faces = render_mesh(
-			pad.verts,
-			pad.faces,
-			pad.x,
-			pad.y,
-			pad.z,
-			pad.sprite_override,
-			false,
-			nil, nil, nil,
-			effective_render_distance,
-			effective_fog_start
-		)
-		for _, f in ipairs(pad_faces) do
-			add(all_faces, f)
-		end
-	end
-	profile("render:pads")
-
-	-- Render all trees
-	for _, tree in ipairs(trees) do
-		local tree_faces = render_mesh(
-			tree.verts,
-			tree.faces,
-			tree.x,
-			tree.y,
-			tree.z,
-			tree.sprite_override,
-			false,
-			nil, nil, nil,
-			effective_render_distance,
-			effective_fog_start
-		)
-		for _, f in ipairs(tree_faces) do
-			add(all_faces, f)
-		end
-	end
-
-	-- Render all cargo objects (with animation and scaling)
-	profile("render:cargo")
-	for cargo in all(Mission.cargo_objects) do
-		-- Skip only if delivered (show when attached)
-		if cargo.state ~= "delivered" then
-			-- Scale vertices to 50% for consistent size
-			local scaled_verts = {}
-			for _, v in ipairs(cargo.verts) do
-				add(scaled_verts, vec(v.x * cargo.scale, v.y * cargo.scale, v.z * cargo.scale))
-			end
-
-			local cargo_faces = render_mesh(
-				scaled_verts,
-				cargo.faces,
-				cargo.x,
-				cargo.y + cargo.bob_offset,
-				cargo.z,
-				nil,  -- no sprite override
-				false,  -- not ground
-				cargo.pitch, cargo.yaw, cargo.roll,  -- Use cargo rotation (matches ship when attached)
-				effective_render_distance,
-				effective_fog_start
-			)
-			for _, f in ipairs(cargo_faces) do
-				add(all_faces, f)
-			end
-		end
-	end
-	profile("render:cargo")
-
-	-- Get sphere faces (floating above the city)
-	-- local sphere_sorted = render_mesh(sphere_verts, sphere_faces, 0, 5, 0)
-	-- for _, f in ipairs(sphere_sorted) do
-	-- 	add(all_faces, f)
-	-- end
-
-	-- Render smoke particles using particle system (camera-facing billboards)
-	profile("render:particles")
-	if debug_toggles.fx then
-		local smoke_faces = smoke_system:render(render_mesh, camera)
-		for _, f in ipairs(smoke_faces) do
-			f.is_vtol = true  -- Mark smoke as VTOL-related
-			add(all_faces, f)
-		end
-	end
-	profile("render:particles")
-
-	-- Render bullets (ONLY FOR MISSION 6)
-	if Mission.current_mission_num == 6 then
-		local bullet_faces = Bullets.render(render_mesh, camera)
-		for _, f in ipairs(bullet_faces) do
-			add(all_faces, f)
-		end
-
-		-- Render aliens
-		profile("render:aliens")
-		for alien in all(Aliens.get_all()) do
-			local alien_mesh = alien.type == "fighter" and ufo_fighter_mesh or ufo_mother_mesh
-			if alien_mesh and alien_mesh.verts then
-				-- Extended render distance for aliens (fighters: 50 units = 500m, mother ship: 100 units = 1000m)
-				local alien_render_distance = alien.type == "mother" and 100 or 50
-				local alien_faces = render_mesh(
-					alien_mesh.verts,
-					alien_mesh.faces,
-					alien.x,
-					alien.y,
-					alien.z,
-					nil,
-					false,
-					0, alien.yaw, alien.roll or 0,  -- Add roll for banking
-					alien_render_distance,
-					effective_fog_start
-				)
-				for _, f in ipairs(alien_faces) do
-					add(all_faces, f)
-				end
-			end
-		end
-		profile("render:aliens")
-	end
-
-	-- Render turret (attached to ship, using proper mount position and quaternion rotation) (ONLY FOR MISSION 6)
-	local turret_x, turret_y, turret_z
-	if Mission.current_mission_num == 6 then
-		turret_x, turret_y, turret_z = Turret.get_position(vtol.x, vtol.y, vtol.z, vtol.pitch, vtol.yaw, vtol.roll)
-		local turret_pitch, turret_yaw, turret_roll = Turret.get_euler_angles()
-		local turret_faces = render_mesh(
-			Turret.verts,
-			Turret.faces,
-			turret_x,
-			turret_y,
-			turret_z,
-			nil,
-			false,
-			turret_pitch, turret_yaw, turret_roll,
-			effective_render_distance,
-			effective_fog_start
-		)
-		for _, f in ipairs(turret_faces) do
-			f.is_vtol = true  -- Mark turret as VTOL-related
-			add(all_faces, f)
-		end
-	end
-
-	-- DEBUG: Turret wireframe (disabled)
-	-- Uncomment to enable turret debug visualization
-
-	-- Calculate if ship should flash (critically damaged)
-	profile("render:ship")
-	if debug_toggles.player_ship then
-		local health_percent = vtol.health / vtol.max_health
-		local use_damage_sprite = false
-		if health_percent < 0.2 then  -- Below 20%
-			use_damage_sprite = (time() * 2) % 1 > 0.5  -- Flash on/off (slower)
-		end
-
-		-- Get filtered faces from Ship module
-		local vtol_faces_filtered = vtol:get_render_faces(use_damage_sprite)
-
-		local vtol_sorted = render_mesh(
-			vtol.verts,
-			vtol_faces_filtered,
-			vtol.x,
-			vtol.y,
-			vtol.z,
-			nil,  -- no sprite override
-			false,  -- not ground
-			vtol.pitch,
-			vtol.yaw,
-			vtol.roll,
-			effective_render_distance,
-			effective_fog_start,
-			false,  -- is_skybox
-			true    -- no_cull - ship should never be culled
-		)
-		for _, f in ipairs(vtol_sorted) do
-			f.is_vtol = true  -- Mark VTOL faces
-			add(all_faces, f)
-		end
-	end
-	profile("render:ship")
-
-	-- Draw ship collision box wireframe (if enabled)
-	if debug_toggles.bbox then
-		local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
-
-		Collision.draw_wireframe(
-			camera,
-			vtol.x,
-			vtol.y,
-			vtol.z,
-			ship_width,
-			ship_height,
-			ship_depth,
-			11  -- Cyan for ship collision box
-		)
-	end
-
-	-- Special case: VTOL always renders in front when landed on a surface
-	-- Check if VTOL is within horizontal bounds of landing pad or any building
-	local vtol_on_surface = false
-
-	-- Check landing pad bounds
-	local pad_hw, pad_hd = landing_pad.width / 2, landing_pad.depth / 2
-	if abs(vtol.x - landing_pad.x) < pad_hw and abs(vtol.z - landing_pad.z) < pad_hd then
-		-- VTOL is above/on landing pad
-		if vtol.y <= landing_pad.height + 1 then  -- Within 1m of landing pad top
-			vtol_on_surface = true
-		end
-	end
-
-	-- Check building bounds
-	if not vtol_on_surface then
-		for i, building in ipairs(buildings) do
-			local config = building_configs[i]
-			if config then
-				local hw, hd = config.width, config.depth
-				local building_height = config.height * 2
-				if abs(vtol.x - building.x) < hw and abs(vtol.z - building.z) < hd then
-					-- VTOL is above/on building
-					if vtol.y <= building_height + 1 then  -- Within 1m of building top
-						vtol_on_surface = true
-						break
-					end
-				end
-			end
-		end
-	end
-
-	-- If VTOL is on a surface, bias ONLY VTOL faces to render in front
-	-- Landing pad and buildings still sort normally with each other
-	if vtol_on_surface then
-		for _, f in ipairs(all_faces) do
-			-- Only bias faces marked as VTOL (ship, flames, smoke)
-			if f.is_vtol then
-				f.depth = f.depth - 100  -- Move VTOL/smoke faces much closer for sorting
-			end
-		end
-	end
-
-	-- Sort all faces using Renderer module
-	profile("render:sort")
-	Renderer.sort_faces(all_faces)
-	profile("render:sort")
-
-	-- Draw all faces using Renderer module
-	profile("render:draw")
-	Renderer.draw_faces(all_faces, false)
-	profile("render:draw")
-
-	-- Draw laser beam from turret (100m = 10 units) - simple red line - ALWAYS IN FRONT (ONLY FOR MISSION 6)
-	if Mission.current_mission_num == 6 and Turret.target then
-		-- Check if target is within firing range
-		local dx = Turret.target.x - turret_x
-		local dy = Turret.target.y - turret_y
-		local dz = Turret.target.z - turret_z
-		local dist = sqrt(dx*dx + dy*dy + dz*dz)
-
-		if dist <= Turret.FIRE_RANGE then
-			local dir_x, dir_y, dir_z = Turret.get_fire_direction(vtol)
-			if dir_x then
-				local laser_length = 10  -- 100 meters
-
-				-- Calculate laser end point in world space
-				local laser_end_x = turret_x + dir_x * laser_length
-				local laser_end_y = turret_y + dir_y * laser_length
-				local laser_end_z = turret_z + dir_z * laser_length
-
-				-- Project both points to screen space
-				local start_sx, start_sy, start_depth = Turret.project_3d_to_2d(turret_x, turret_y, turret_z, camera)
-				local end_sx, end_sy, end_depth = Turret.project_3d_to_2d(laser_end_x, laser_end_y, laser_end_z, camera)
-
-				-- Draw line if both points are visible
-				if start_sx and end_sx and start_depth > 0 and end_depth > 0 then
-					line(start_sx, start_sy, end_sx, end_sy, 8)  -- Red laser (color 8)
-				end
-			end
-		end
-	end
-
-	-- Draw line particles (mother ship debris) - ALWAYS IN FRONT (ONLY FOR MISSION 6)
-	if Mission.current_mission_num == 6 and debug_toggles.fx then
-		for p in all(line_particles) do
-			-- Line particles are small debris lines flying outward
-			-- Draw as short lines from current position in direction of velocity
-			local line_length = 0.5  -- Length of debris line
-			local end_x = p.x + (p.vx / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
-			local end_y = p.y + (p.vy / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
-			local end_z = p.z + (p.vz / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
-
-			-- Project both points to screen space
-			local start_sx, start_sy, start_depth = Turret.project_3d_to_2d(p.x, p.y, p.z, camera)
-			local end_sx, end_sy, end_depth = Turret.project_3d_to_2d(end_x, end_y, end_z, camera)
-
-			-- Draw line if both points are visible
-			if start_sx and end_sx and start_depth > 0 and end_depth > 0 then
-				line(start_sx, start_sy, end_sx, end_sy, p.color or 12)  -- Blue debris
-			end
-		end
-	end
-
+-- Draw all UI elements (health bar, compass, debug info, etc)
+local function draw_ui(all_faces, terrain_tiles_rendered, terrain_tiles_culled, effective_render_distance)
 	profile("ui:draw")
 
 	-- Performance info (right side, below minimap) - ALWAYS SHOW (not affected by UI toggle)
@@ -2910,6 +2484,34 @@ function _draw()
 				end
 			end
 		end
+
+		-- Draw terrain tile bounding boxes (green) - only render nearby tiles to avoid overhead
+		local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
+		for _, tile in ipairs(terrain_tiles) do
+			-- Only draw bbox for tiles within a smaller radius to reduce clutter
+			local dx = tile.center_x - camera.x
+			local dz = tile.center_z - camera.z
+			if dx*dx + dz*dz <= 100 then  -- Only draw nearby tiles (10 unit radius)
+				-- Calculate AABB center and extents from bounds
+				local center_x = (tile.bounds.min_x + tile.bounds.max_x) / 2
+				local center_y = (tile.bounds.min_y + tile.bounds.max_y) / 2
+				local center_z = (tile.bounds.min_z + tile.bounds.max_z) / 2
+				local full_width = tile.bounds.max_x - tile.bounds.min_x
+				local full_height = tile.bounds.max_y - tile.bounds.min_y
+				local full_depth = tile.bounds.max_z - tile.bounds.min_z
+
+				Collision.draw_wireframe(
+					camera,
+					center_x,
+					center_y,
+					center_z,
+					full_width,
+					full_height,
+					full_depth,
+					11  -- Green
+				)
+			end
+		end
 	end
 
 	-- Debug: Draw heightmap sprite to verify it's the correct one
@@ -3037,5 +2639,436 @@ function _draw()
 	if Weather.enabled and debug_toggles.fx then
 		Weather.draw_rain_lines(camera, vtol)
 	end
+
 	profile("ui:draw")
+end
+
+function _draw()
+	-- Handle cutscene rendering
+	if Cutscene.active then
+		Cutscene.draw()
+		return
+	end
+
+	-- Handle menu rendering
+	if Menu.active then
+		Menu.draw(camera, render_mesh)
+		return
+	end
+
+	cls(5)  -- Background color index 6
+
+	-- Update FPS counter (count rendered frames)
+  	current_fps = stat(7)
+
+	-- Reset culling counters
+	objects_rendered = 0
+	objects_culled = 0
+
+	-- Apply weather overrides for fog and render distance
+	local effective_render_distance = RENDER_DISTANCE
+	local effective_fog_start = FOG_START_DISTANCE
+	if Weather.enabled then
+		effective_render_distance = WEATHER_RENDER_DISTANCE
+		effective_fog_start = WEATHER_FOG_START_DISTANCE
+	end
+
+	-- Extract frustum planes for culling (DISABLED - needs proper implementation)
+	-- profile("render:frustum_extract")
+	-- local frustum = Frustum.extract_planes(camera, 70, 480/270, 0.01, effective_render_distance)
+	-- profile("render:frustum_extract")
+
+	-- Collect all faces from all meshes
+	local all_faces = {}
+
+	-- Render skybox (always at camera position, draws behind everything)
+	profile("render:skybox")
+	if debug_toggles.skybox then
+		local skybox_sorted
+		if Mission.current_mission_num == 6 then
+			-- Mission 6: use special dome skybox with sprite 29 (64x32)
+			-- is_ground=true, is_skybox=true for special pitch-independent culling
+			skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true, nil, nil, nil, nil, nil, true)
+		else
+			-- Other missions: use regular skybox
+			local skybox_sprite = nil
+			if Weather.enabled then
+				-- Mission 5: use cloudy sky (sprite 23)
+				skybox_sprite = 23
+			end
+			skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true, nil, nil, nil, nil, nil, true)
+		end
+
+		for _, f in ipairs(skybox_sorted) do
+			f.depth = 999999  -- Push skybox to back (always draws behind)
+			f.is_skybox = true  -- Mark as skybox to exclude from fog
+			add(all_faces, f)
+		end
+	end
+	profile("render:skybox")
+
+	-- Generate terrain tiles with bounding boxes for culling
+	local terrain_tiles_rendered = 0
+	local terrain_tiles_culled = 0
+	if debug_toggles.terrain then
+		profile("terrain:gen")
+		local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
+		profile("terrain:gen")
+
+		profile("render:terrain")
+		-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
+		local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
+		local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
+
+		for _, tile in ipairs(terrain_tiles) do
+			-- Distance cull terrain tiles based on center point and height
+			local distance_culled = Renderer.tile_distance_cull(tile.center_x, tile.center_z, tile.height, camera, effective_render_distance)
+
+			if not distance_culled then
+				-- Update water sprite on water faces
+				for _, face in ipairs(tile.faces) do
+					if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
+						face[4] = water_sprite
+					end
+				end
+
+				-- Render tile (each tile has its own verts/faces)
+				local tile_sorted = render_mesh(tile.verts, tile.faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
+				for _, f in ipairs(tile_sorted) do
+					add(all_faces, f)
+				end
+				terrain_tiles_rendered += 1
+			else
+				terrain_tiles_culled += 1
+			end
+		end
+		profile("render:terrain")
+	end
+
+	-- Render all buildings
+	profile("render:buildings")
+	if debug_toggles.buildings then
+		for _, building in ipairs(buildings) do
+			local building_faces = render_mesh(
+				building.verts,
+				building.faces,
+				building.x,
+				building.y,
+				building.z,
+				building.sprite_override,
+				false,
+				nil, nil, nil,
+				effective_render_distance,
+				effective_fog_start
+			)
+			for _, f in ipairs(building_faces) do
+				add(all_faces, f)
+			end
+		end
+	end
+	profile("render:buildings")
+
+	-- Render all landing pads
+	profile("render:pads")
+	for _, pad in ipairs(LandingPads.get_all()) do
+		local pad_faces = render_mesh(
+			pad.verts,
+			pad.faces,
+			pad.x,
+			pad.y,
+			pad.z,
+			pad.sprite_override,
+			false,
+			nil, nil, nil,
+			effective_render_distance,
+			effective_fog_start
+		)
+		for _, f in ipairs(pad_faces) do
+			add(all_faces, f)
+		end
+	end
+	profile("render:pads")
+
+	-- Render all trees
+	for _, tree in ipairs(trees) do
+		local tree_faces = render_mesh(
+			tree.verts,
+			tree.faces,
+			tree.x,
+			tree.y,
+			tree.z,
+			tree.sprite_override,
+			false,
+			nil, nil, nil,
+			effective_render_distance,
+			effective_fog_start
+		)
+		for _, f in ipairs(tree_faces) do
+			add(all_faces, f)
+		end
+	end
+
+	-- Render all cargo objects (with animation and scaling)
+	profile("render:cargo")
+	for cargo in all(Mission.cargo_objects) do
+		-- Skip only if delivered (show when attached)
+		if cargo.state ~= "delivered" then
+			-- Scale vertices to 50% for consistent size
+			local scaled_verts = {}
+			for _, v in ipairs(cargo.verts) do
+				add(scaled_verts, vec(v.x * cargo.scale, v.y * cargo.scale, v.z * cargo.scale))
+			end
+
+			local cargo_faces = render_mesh(
+				scaled_verts,
+				cargo.faces,
+				cargo.x,
+				cargo.y + cargo.bob_offset,
+				cargo.z,
+				nil,  -- no sprite override
+				false,  -- not ground
+				cargo.pitch, cargo.yaw, cargo.roll,  -- Use cargo rotation (matches ship when attached)
+				effective_render_distance,
+				effective_fog_start
+			)
+			for _, f in ipairs(cargo_faces) do
+				add(all_faces, f)
+			end
+		end
+	end
+	profile("render:cargo")
+
+	-- Get sphere faces (floating above the city)
+	-- local sphere_sorted = render_mesh(sphere_verts, sphere_faces, 0, 5, 0)
+	-- for _, f in ipairs(sphere_sorted) do
+	-- 	add(all_faces, f)
+	-- end
+
+	-- Render smoke particles using particle system (camera-facing billboards)
+	profile("render:particles")
+	if debug_toggles.fx then
+		local smoke_faces = smoke_system:render(render_mesh, camera)
+		for _, f in ipairs(smoke_faces) do
+			f.is_vtol = true  -- Mark smoke as VTOL-related
+			add(all_faces, f)
+		end
+	end
+	profile("render:particles")
+
+	-- Render bullets (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 then
+		local bullet_faces = Bullets.render(render_mesh, camera)
+		for _, f in ipairs(bullet_faces) do
+			add(all_faces, f)
+		end
+
+		-- Render aliens
+		profile("render:aliens")
+		for alien in all(Aliens.get_all()) do
+			local alien_mesh = alien.type == "fighter" and ufo_fighter_mesh or ufo_mother_mesh
+			if alien_mesh and alien_mesh.verts then
+				-- Extended render distance for aliens (fighters: 50 units = 500m, mother ship: 100 units = 1000m)
+				local alien_render_distance = alien.type == "mother" and 100 or 50
+				local alien_faces = render_mesh(
+					alien_mesh.verts,
+					alien_mesh.faces,
+					alien.x,
+					alien.y,
+					alien.z,
+					nil,
+					false,
+					0, alien.yaw, alien.roll or 0,  -- Add roll for banking
+					alien_render_distance,
+					effective_fog_start
+				)
+				for _, f in ipairs(alien_faces) do
+					add(all_faces, f)
+				end
+			end
+		end
+		profile("render:aliens")
+	end
+
+	-- Render turret (attached to ship, using proper mount position and quaternion rotation) (ONLY FOR MISSION 6)
+	local turret_x, turret_y, turret_z
+	if Mission.current_mission_num == 6 then
+		turret_x, turret_y, turret_z = Turret.get_position(vtol.x, vtol.y, vtol.z, vtol.pitch, vtol.yaw, vtol.roll)
+		local turret_pitch, turret_yaw, turret_roll = Turret.get_euler_angles()
+		local turret_faces = render_mesh(
+			Turret.verts,
+			Turret.faces,
+			turret_x,
+			turret_y,
+			turret_z,
+			nil,
+			false,
+			turret_pitch, turret_yaw, turret_roll,
+			effective_render_distance,
+			effective_fog_start
+		)
+		for _, f in ipairs(turret_faces) do
+			f.is_vtol = true  -- Mark turret as VTOL-related
+			add(all_faces, f)
+		end
+	end
+
+	-- DEBUG: Turret wireframe (disabled)
+	-- Uncomment to enable turret debug visualization
+
+	-- Calculate if ship should flash (critically damaged)
+	profile("render:ship")
+	if debug_toggles.player_ship then
+		local health_percent = vtol.health / vtol.max_health
+		local use_damage_sprite = false
+		if health_percent < 0.2 then  -- Below 20%
+			use_damage_sprite = (time() * 2) % 1 > 0.5  -- Flash on/off (slower)
+		end
+
+		-- Get filtered faces from Ship module
+		local vtol_faces_filtered = vtol:get_render_faces(use_damage_sprite)
+
+		local vtol_sorted = render_mesh(
+			vtol.verts,
+			vtol_faces_filtered,
+			vtol.x,
+			vtol.y,
+			vtol.z,
+			nil,  -- no sprite override
+			false,  -- not ground
+			vtol.pitch,
+			vtol.yaw,
+			vtol.roll,
+			effective_render_distance,
+			effective_fog_start,
+			false,  -- is_skybox
+			true    -- no_cull - ship should never be culled
+		)
+		for _, f in ipairs(vtol_sorted) do
+			f.is_vtol = true  -- Mark VTOL faces
+			add(all_faces, f)
+		end
+	end
+	profile("render:ship")
+
+	-- Draw ship collision box wireframe (if enabled)
+	if debug_toggles.bbox then
+		local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
+
+		Collision.draw_wireframe(
+			camera,
+			vtol.x,
+			vtol.y,
+			vtol.z,
+			ship_width,
+			ship_height,
+			ship_depth,
+			11  -- Cyan for ship collision box
+		)
+	end
+
+	-- Special case: VTOL always renders in front when landed on a surface
+	-- Check if VTOL is within horizontal bounds of landing pad or any building
+	local vtol_on_surface = false
+
+	-- Check landing pad bounds
+	local pad_hw, pad_hd = landing_pad.width / 2, landing_pad.depth / 2
+	if abs(vtol.x - landing_pad.x) < pad_hw and abs(vtol.z - landing_pad.z) < pad_hd then
+		-- VTOL is above/on landing pad
+		if vtol.y <= landing_pad.height + 1 then  -- Within 1m of landing pad top
+			vtol_on_surface = true
+		end
+	end
+
+	-- Check building bounds
+	if not vtol_on_surface then
+		for i, building in ipairs(buildings) do
+			local config = building_configs[i]
+			if config then
+				local hw, hd = config.width, config.depth
+				local building_height = config.height * 2
+				if abs(vtol.x - building.x) < hw and abs(vtol.z - building.z) < hd then
+					-- VTOL is above/on building
+					if vtol.y <= building_height + 1 then  -- Within 1m of building top
+						vtol_on_surface = true
+						break
+					end
+				end
+			end
+		end
+	end
+
+	-- If VTOL is on a surface, bias ONLY VTOL faces to render in front
+	-- Landing pad and buildings still sort normally with each other
+	if vtol_on_surface then
+		for _, f in ipairs(all_faces) do
+			-- Only bias faces marked as VTOL (ship, flames, smoke)
+			if f.is_vtol then
+				f.depth = f.depth - 100  -- Move VTOL/smoke faces much closer for sorting
+			end
+		end
+	end
+
+	-- Sort all faces using Renderer module
+	profile("render:sort")
+	Renderer.sort_faces(all_faces)
+	profile("render:sort")
+
+	-- Draw all faces using Renderer module
+	profile("render:draw")
+	Renderer.draw_faces(all_faces, false)
+	profile("render:draw")
+
+	-- Draw laser beam from turret (100m = 10 units) - simple red line - ALWAYS IN FRONT (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 and Turret.target then
+		-- Check if target is within firing range
+		local dx = Turret.target.x - turret_x
+		local dy = Turret.target.y - turret_y
+		local dz = Turret.target.z - turret_z
+		local dist = sqrt(dx*dx + dy*dy + dz*dz)
+
+		if dist <= Turret.FIRE_RANGE then
+			local dir_x, dir_y, dir_z = Turret.get_fire_direction(vtol)
+			if dir_x then
+				local laser_length = 10  -- 100 meters
+
+				-- Calculate laser end point in world space
+				local laser_end_x = turret_x + dir_x * laser_length
+				local laser_end_y = turret_y + dir_y * laser_length
+				local laser_end_z = turret_z + dir_z * laser_length
+
+				-- Project both points to screen space
+				local start_sx, start_sy, start_depth = Turret.project_3d_to_2d(turret_x, turret_y, turret_z, camera)
+				local end_sx, end_sy, end_depth = Turret.project_3d_to_2d(laser_end_x, laser_end_y, laser_end_z, camera)
+
+				-- Draw line if both points are visible
+				if start_sx and end_sx and start_depth > 0 and end_depth > 0 then
+					line(start_sx, start_sy, end_sx, end_sy, 8)  -- Red laser (color 8)
+				end
+			end
+		end
+	end
+
+	-- Draw line particles (mother ship debris) - ALWAYS IN FRONT (ONLY FOR MISSION 6)
+	if Mission.current_mission_num == 6 and debug_toggles.fx then
+		for p in all(line_particles) do
+			-- Line particles are small debris lines flying outward
+			-- Draw as short lines from current position in direction of velocity
+			local line_length = 0.5  -- Length of debris line
+			local end_x = p.x + (p.vx / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
+			local end_y = p.y + (p.vy / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
+			local end_z = p.z + (p.vz / sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz)) * line_length
+
+			-- Project both points to screen space
+			local start_sx, start_sy, start_depth = Turret.project_3d_to_2d(p.x, p.y, p.z, camera)
+			local end_sx, end_sy, end_depth = Turret.project_3d_to_2d(end_x, end_y, end_z, camera)
+
+			-- Draw line if both points are visible
+			if start_sx and end_sx and start_depth > 0 and end_depth > 0 then
+				line(start_sx, start_sy, end_sx, end_sy, p.color or 12)  -- Blue debris
+			end
+		end
+	end
+
+	-- Draw all UI elements (health, compass, minimap, mission UI, etc.)
+	draw_ui(all_faces, terrain_tiles_rendered, terrain_tiles_culled, effective_render_distance)
 end
