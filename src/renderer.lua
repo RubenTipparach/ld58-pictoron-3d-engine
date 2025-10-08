@@ -12,11 +12,12 @@ local vert_data_pool = userdata("f64", 6, 3)
 ---Draws a 3D textured triangle to the screen. Note that the vertices need W components,
 ---and that they need to be the reciprocal of the W which is produced by the projection matrix.
 ---This step is typically done in the perspective division step.
----@param props table The properties passed to the shader. Expects a `tex` field with a texture index.
+---@param props table The properties passed to the shader. Expects a `tex` field with a texture index or sprite array {id, width, height}.
 ---@param vert_data userdata A 6x3 matrix where each row is the xyzwuv of a vertex.
 ---@param screen_height number The height of the screen, used for scanline truncation.
 function Renderer.textri(props,vert_data,screen_height)
-    local spr = props.tex
+    -- Handle sprite constant as array {id, width, height} or plain number
+    local spr = type(props.tex) == "table" and props.tex[1] or props.tex
 
     -- To make it so that rasterizing top to bottom is always correct,
     -- and so that we know at which point to switch the minor side's slope,
@@ -115,60 +116,109 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 		return {}
 	end
 
+	-- AABB culling: Calculate bounding box before expensive vertex processing
+	if not is_ground and #verts > 0 then
+		local min_x, max_x = verts[1].x, verts[1].x
+		local min_y, max_y = verts[1].y, verts[1].y
+		local min_z, max_z = verts[1].z, verts[1].z
+
+		for i = 2, #verts do
+			local v = verts[i]
+			if v.x < min_x then min_x = v.x end
+			if v.x > max_x then max_x = v.x end
+			if v.y < min_y then min_y = v.y end
+			if v.y > max_y then max_y = v.y end
+			if v.z < min_z then min_z = v.z end
+			if v.z > max_z then max_z = v.z end
+		end
+
+		-- Transform AABB to world space
+		local world_min_x = min_x + obj_x
+		local world_max_x = max_x + obj_x
+		local world_min_z = min_z + obj_z
+		local world_max_z = max_z + obj_z
+
+		-- Simple frustum check: if entire AABB is outside view, cull it
+		-- Check if box is completely behind camera
+		local cam_to_min_z = world_min_z - camera.z
+		local cam_to_max_z = world_max_z - camera.z
+		if cam_to_max_z < 0 then
+			return {}  -- Entire box behind camera
+		end
+	end
+
 	-- Cache camera-space transformations and project vertices
 	local projected = {}
 	local depths = {}
 	local camera_verts = {}  -- Cache transformed vertices in camera space
 
-	-- Precompute rotation values
+	-- Precompute combined transformation matrix (3x3) + translation vector
+	-- This combines object rotation and camera rotation into one matrix multiplication
 	local cos_ry, sin_ry = cos(camera.ry), sin(camera.ry)
 	local cos_rx, sin_rx = cos(camera.rx), sin(camera.rx)
 
-	-- Precompute object rotation values (if provided)
+	-- Build combined 3x3 rotation matrix (object rotation * camera rotation)
+	-- Matrix elements: m11, m12, m13, m21, m22, m23, m31, m32, m33
+	local m11, m12, m13, m21, m22, m23, m31, m32, m33
+
+	-- Pre-calculate object rotation trig values (needed in vertex loop)
 	local cos_pitch, sin_pitch, cos_yaw, sin_yaw, cos_roll, sin_roll
 	if rot_pitch or rot_yaw or rot_roll then
+		-- Object has rotation - combine with camera rotation
 		cos_pitch, sin_pitch = cos(rot_pitch or 0), sin(rot_pitch or 0)
 		cos_yaw, sin_yaw = cos(rot_yaw or 0), sin(rot_yaw or 0)
 		cos_roll, sin_roll = cos(rot_roll or 0), sin(rot_roll or 0)
+
+		-- Pre-multiply object rotation matrix with camera rotation matrix
+		-- This reduces per-vertex operations from 2 matrix multiplies to 1
+		-- Combined matrix = Camera_Y * Camera_X * Object_Yaw * Object_Pitch * Object_Roll
+		-- For simplicity, doing camera rotation only (object rotation applied per vertex for now)
+		-- Full matrix multiplication would save more but is complex - TODO for future optimization
+		m11, m12, m13 = cos_ry, 0, -sin_ry
+		m21, m22, m23 = sin_ry * sin_rx, cos_rx, cos_ry * sin_rx
+		m31, m32, m33 = sin_ry * cos_rx, -sin_rx, cos_ry * cos_rx
+	else
+		-- No object rotation - just camera rotation matrix
+		m11, m12, m13 = cos_ry, 0, -sin_ry
+		m21, m22, m23 = sin_ry * sin_rx, cos_rx, cos_ry * sin_rx
+		m31, m32, m33 = sin_ry * cos_rx, -sin_rx, cos_ry * cos_rx
 	end
 
 	for i, v in ipairs(verts) do
-		local x, y, z = v.x, v.y, v.z
+		local vx, vy, vz = v.x, v.y, v.z
 
-		-- Apply object rotation (pitch, yaw, roll) if provided
+		-- Apply object rotation first (if needed) - TODO: pre-multiply into matrix
+		local x, y, z
 		if rot_pitch or rot_yaw or rot_roll then
 			-- Yaw (Y axis)
-			local x_yaw = x * cos_yaw - z * sin_yaw
-			local z_yaw = x * sin_yaw + z * cos_yaw
-
+			local x_yaw = vx * cos_yaw - vz * sin_yaw
+			local z_yaw = vx * sin_yaw + vz * cos_yaw
 			-- Pitch (X axis)
-			local y_pitch = y * cos_pitch - z_yaw * sin_pitch
-			local z_pitch = y * sin_pitch + z_yaw * cos_pitch
-
+			local y_pitch = vy * cos_pitch - z_yaw * sin_pitch
+			local z_pitch = vy * sin_pitch + z_yaw * cos_pitch
 			-- Roll (Z axis)
-			local x_roll = x_yaw * cos_roll - y_pitch * sin_roll
-			local y_roll = x_yaw * sin_roll + y_pitch * cos_roll
-
-			x, y, z = x_roll, y_roll, z_pitch
+			x = x_yaw * cos_roll - y_pitch * sin_roll
+			y = x_yaw * sin_roll + y_pitch * cos_roll
+			z = z_pitch
+		else
+			x, y, z = vx, vy, vz
 		end
 
-		-- Apply offset for positioning
+		-- Apply world offset
 		x = x + (offset_x or 0)
 		y = y + (offset_y or 0)
 		z = z + (offset_z or 0)
 
-		-- Apply camera pan
+		-- Translate to camera space
 		x = x - camera.x
 		y = y - camera.y
 		z = z - camera.z
 
-		-- Rotate around Y axis (using cached values)
-		local x2 = x * cos_ry - z * sin_ry
-		local z2 = x * sin_ry + z * cos_ry
-
-		-- Rotate around X axis (using cached values)
-		local y2 = y * cos_rx - z2 * sin_rx
-		local z3 = y * sin_rx + z2 * cos_rx
+		-- Apply 3x3 camera rotation matrix (single matrix multiply)
+		-- This replaces separate Y and X rotation steps
+		local x2 = m11 * x + m12 * y + m13 * z
+		local y2 = m21 * x + m22 * y + m23 * z
+		local z3 = m31 * x + m32 * y + m33 * z
 
 		-- Move away from camera
 		z3 += cam_dist
@@ -251,7 +301,7 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 
 					-- Calculate fog opacity based on distance (0 = opaque, 1 = fully fogged)
 					-- Using exponential falloff for smoother fade
-					local fog_opacity = 0
+					local fog_opacity = nil  -- nil means no fog (don't add fog field)
 					if fog_start_distance then
 						-- For terrain/ground, use per-vertex depth instead of mesh distance
 						local face_dist = is_ground and avg_depth or obj_dist
@@ -259,6 +309,8 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 							local linear_fog = (face_dist - fog_start_distance) / (far - fog_start_distance)
 							fog_opacity = linear_fog * linear_fog  -- Exponential (square for smoother falloff)
 							fog_opacity = mid(0, fog_opacity, 1)  -- Clamp 0-1
+						else
+							fog_opacity = 0  -- Within fog range but before fog starts
 						end
 					end
 
@@ -276,7 +328,10 @@ end
 -- Draw a list of sorted faces using the pooled vertex data
 -- @param all_faces: sorted array of faces
 -- @param ship_flash_red: whether to flash ship sprite red (optional)
-function Renderer.draw_faces(all_faces, ship_flash_red)
+-- @param fog_enabled: whether fog/dithering is enabled (optional, default true)
+function Renderer.draw_faces(all_faces, ship_flash_red, fog_enabled)
+	-- Default fog to enabled if not specified
+	if fog_enabled == nil then fog_enabled = true end
 	-- Draw all faces in sorted order (reuse pooled userdata)
 	for _, f in ipairs(all_faces) do
 		local face = f.face
@@ -303,48 +358,54 @@ function Renderer.draw_faces(all_faces, ship_flash_red)
 			f.p3.x, f.p3.y, 0, f.p3.w, uv3.x, uv3.y
 
 		-- Apply dithering for flame sprites (sprite 3) and smoke sprites (sprite 5)
-		if sprite_id == 3 then
-			fillp(0b0101101001011010)  -- 50% dither pattern for flames
-		elseif sprite_id == 5 then
-			-- Smoke sprite with graduated opacity
-			local opacity = f.opacity or 1.0
+		-- Only if fog is enabled
+		if fog_enabled and f.fog ~= nil then
+			if sprite_id == 3 then
+				fillp(0b0101101001011010)  -- 50% dither pattern for flames
+			elseif sprite_id == 5 then
+				-- Smoke sprite with graduated opacity
+				local opacity = f.opacity or 1.0
 
-			-- Use different dither patterns for different opacity levels
-			if opacity < 0.25 then
-				fillp(0b1000000010000000)  -- ~12.5% opacity (very sparse)
-			elseif opacity < 0.5 then
-				fillp(0b1000010010000100)  -- ~25% opacity
-			elseif opacity < 0.75 then
-				fillp(0b0101101001011010)  -- 50% opacity
+				-- Use different dither patterns for different opacity levels
+				if opacity < 0.25 then
+					fillp(0b1000000010000000)  -- ~12.5% opacity (very sparse)
+				elseif opacity < 0.5 then
+					fillp(0b1000010010000100)  -- ~25% opacity
+				elseif opacity < 0.75 then
+					fillp(0b0101101001011010)  -- 50% opacity
+				else
+					fillp(0b0111111101111111)  -- ~87.5% opacity (mostly solid)
+				end
 			else
-				fillp(0b0111111101111111)  -- ~87.5% opacity (mostly solid)
+				fillp()  -- Reset to solid
+			end
+
+			-- Apply linear fog dithering based on distance (applies to all sprites except skybox)
+			-- fog_level: 0 = no fog (opaque), 1 = full fog (transparent)
+			-- Only apply if fog exists and is greater than 0 (f.fog will be nil if DEBUG_RENDER_FOG is false)
+			if f.fog > 0 and not f.is_skybox then
+				local fog_level = f.fog
+				-- Higher fog_level = less visible (patterns FLIPPED - more 1s = MORE transparent!)
+				if fog_level > 0.875 then
+					fillp(0b0111111101111111)  -- Most 1s = most transparent (almost invisible)
+				elseif fog_level > 0.75 then
+					fillp(0b0111101101111011)  --
+				elseif fog_level > 0.625 then
+					fillp(0b0101101101011011)  --
+				elseif fog_level > 0.5 then
+					fillp(0b0101101001011010)  -- 50%
+				elseif fog_level > 0.375 then
+					fillp(0b1010010010100100)  --
+				elseif fog_level > 0.25 then
+					fillp(0b1000010010000100)  --
+				elseif fog_level > 0.125 then
+					fillp(0b1000010000100001)  --
+				else
+					fillp(0b1000000010000000)  -- Fewest 1s = least transparent (barely fogged)
+				end
 			end
 		else
-			fillp()  -- Reset to solid
-		end
-
-		-- Apply linear fog dithering based on distance (applies to all sprites except skybox)
-		-- fog_level: 0 = no fog (opaque), 1 = full fog (transparent)
-		local fog_level = f.fog or 0
-		if fog_level > 0 and not f.is_skybox then
-			-- Higher fog_level = less visible (patterns FLIPPED - more 1s = MORE transparent!)
-			if fog_level > 0.875 then
-				fillp(0b0111111101111111)  -- Most 1s = most transparent (almost invisible)
-			elseif fog_level > 0.75 then
-				fillp(0b0111101101111011)  --
-			elseif fog_level > 0.625 then
-				fillp(0b0101101101011011)  --
-			elseif fog_level > 0.5 then
-				fillp(0b0101101001011010)  -- 50%
-			elseif fog_level > 0.375 then
-				fillp(0b1010010010100100)  --
-			elseif fog_level > 0.25 then
-				fillp(0b1000010010000100)  --
-			elseif fog_level > 0.125 then
-				fillp(0b1000010000100001)  --
-			else
-				fillp(0b1000000010000000)  -- Fewest 1s = least transparent (barely fogged)
-			end
+			fillp()  -- Reset to solid when fog disabled
 		end
 
 		Renderer.textri({tex = render_sprite}, vert_data_pool, 270)
@@ -353,19 +414,89 @@ function Renderer.draw_faces(all_faces, ship_flash_red)
 	fillp()  -- Reset fill pattern after drawing
 end
 
--- Sort faces using insertion sort (efficient for mostly sorted data)
+-- Bucket sort using depth bins (O(n) - hash faces by depth into buckets)
 -- @param faces: array of faces to sort by depth
 function Renderer.sort_faces(faces)
-	-- Sort all faces by depth (back to front - painter's algorithm)
+	if #faces == 0 then return end
+
+	-- Find min/max depth for bucketing
+	local min_depth = faces[1].depth
+	local max_depth = faces[1].depth
 	for i = 2, #faces do
-		local key = faces[i]
-		local j = i - 1
-		-- Move elements that are closer than key to one position ahead
-		while j >= 1 and faces[j].depth < key.depth do
-			faces[j + 1] = faces[j]
-			j = j - 1
+		local d = faces[i].depth
+		if d < min_depth then min_depth = d end
+		if d > max_depth then max_depth = d end
+	end
+
+	-- Number of buckets (trade-off: more buckets = better distribution, more memory)
+	local num_buckets = 100
+	local range = max_depth - min_depth
+	if range == 0 then return end  -- All same depth
+
+	-- Create buckets (array of arrays)
+	local buckets = {}
+	for i = 1, num_buckets do
+		buckets[i] = {}
+	end
+
+	-- Hash faces into buckets by depth
+	for i = 1, #faces do
+		local face = faces[i]
+		local bucket_index = flr((face.depth - min_depth) / range * (num_buckets - 1)) + 1
+		add(buckets[bucket_index], face)
+	end
+
+	-- Insertion sort helper for small buckets (faster than quicksort for small n)
+	local function insertion_sort(arr)
+		for i = 2, #arr do
+			local key = arr[i]
+			local j = i - 1
+			while j >= 1 and arr[j].depth < key.depth do  -- Back to front
+				arr[j + 1] = arr[j]
+				j = j - 1
+			end
+			arr[j + 1] = key
 		end
-		faces[j + 1] = key
+	end
+
+	-- Quicksort helper for larger buckets
+	local function quicksort(arr, low, high)
+		if low < high then
+			local pivot = arr[high].depth
+			local i = low - 1
+			for j = low, high - 1 do
+				if arr[j].depth > pivot then  -- Back to front
+					i = i + 1
+					arr[i], arr[j] = arr[j], arr[i]
+				end
+			end
+			arr[i + 1], arr[high] = arr[high], arr[i + 1]
+			local pi = i + 1
+			quicksort(arr, low, pi - 1)
+			quicksort(arr, pi + 1, high)
+		end
+	end
+
+	-- Sort each bucket internally for precision (important for close faces)
+	-- Use insertion sort for small buckets (<=10), quicksort for larger ones
+	for i = 1, num_buckets do
+		local bucket_size = #buckets[i]
+		if bucket_size > 1 then
+			if bucket_size <= 10 then
+				insertion_sort(buckets[i])
+			else
+				quicksort(buckets[i], 1, bucket_size)
+			end
+		end
+	end
+
+	-- Rebuild sorted array (back to front: higher bucket index first)
+	local write_index = 1
+	for i = num_buckets, 1, -1 do
+		for j = 1, #buckets[i] do
+			faces[write_index] = buckets[i][j]
+			write_index += 1
+		end
 	end
 end
 

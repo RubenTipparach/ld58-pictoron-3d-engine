@@ -20,7 +20,8 @@ local heightmap_data = nil
 -- Initialize heightmap by loading from sprite 256 (spritesheet 1, sprite 0)
 function Heightmap.init()
 	-- Get the sprite data (128x128 sprite at index 256)
-	heightmap_data = get_spr(Heightmap.SPRITE_INDEX)
+	local sprite_id = type(Heightmap.SPRITE_INDEX) == "table" and Heightmap.SPRITE_INDEX[1] or Heightmap.SPRITE_INDEX
+	heightmap_data = get_spr(sprite_id)
 
 	if not heightmap_data then
 		-- Create a flat heightmap as fallback
@@ -214,11 +215,12 @@ function Heightmap.generate_terrain(cam_x, cam_z, grid_count, render_distance)
 				sprite_id = Constants.SPRITE_GROUND
 			end
 
-			-- UV coordinates with 2x2 tiling (32x32 pixels = 2 tiles of 16x16)
+			-- UV coordinates using sprite size from constant (16x16 pixels)
+			local sprite_size = sprite_id[2] or 16  -- Get width from sprite array
 			local uv_tl = vec(0, 0)
-			local uv_tr = vec(32, 0)
-			local uv_br = vec(32, 32)
-			local uv_bl = vec(0, 32)
+			local uv_tr = vec(sprite_size, 0)
+			local uv_br = vec(sprite_size, sprite_size)
+			local uv_bl = vec(0, sprite_size)
 
 			-- First triangle (v1, v2, v3)
 			add(faces, {v1, v2, v3, sprite_id, uv_tl, uv_tr, uv_br})

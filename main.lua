@@ -1,13 +1,13 @@
 -- PARAMETERS (EASY TO ADJUST!)
 
 -- Mission testing
-local mission_testing = false  -- If true, all missions are unlocked
+local mission_testing = true  -- If true, all missions are unlocked
 
 -- Game mode
 local game_mode = "arcade"  -- "arcade" or "simulation"
 
 -- UI toggles
-local show_debug = false
+local show_debug = true
 local show_mission_ui = true
 local show_ship_collision_box = false  -- Toggle ship collision wireframe
 local show_cargo_debug = false  -- Toggle cargo debug info (temporary for Mission 3 debug)
@@ -41,6 +41,12 @@ local function get_ship_collision_dimensions(cargo_objects)
 	end
 end
 
+-- Print text with drop shadow for better readability
+local function print_shadow(text, x, y, color)
+	print(text, x + 1, y + 1, 0)  -- Shadow (black)
+	print(text, x, y, color)       -- Text
+end
+
 -- Load modules
 local load_obj = include("src/obj_loader.lua")
 local ParticleSystem = include("src/particle_system.lua")
@@ -63,6 +69,7 @@ local Aliens = include("src/aliens.lua")
 local Bullets = include("src/bullets.lua")
 local Turret = include("src/turret.lua")
 local Cutscene = include("src/cutscene.lua")
+local profiler = include("src/profiler.lua")
 
 -- Cache sound files at startup for performance
 local intro_music = fetch("sfx/introsong.sfx")
@@ -85,6 +92,9 @@ end
 
 -- Set shared module references
 Mission.LandingPads = LandingPads
+
+-- Enable profiler when debug mode is on
+profiler.enabled(show_debug, true)
 -- Import sprite constants for easy reference
 local SPRITE_CUBE = Constants.SPRITE_CUBE
 local SPRITE_SPHERE = Constants.SPRITE_SPHERE
@@ -170,6 +180,14 @@ local GROUND_ALWAYS_BEHIND = false  -- Force ground to render behind everything 
 -- Heightmap Configuration
 local USE_HEIGHTMAP = true  -- Enable heightmap terrain system (128x128 map from sprite 64)
 local DEBUG_SHOW_HEIGHTMAP_SPRITE = false  -- Draw sprite 64 (heightmap data) on screen to verify it's correct
+
+-- Debug render toggles (use number keys 1-6 to toggle)
+local DEBUG_RENDER_SKYBOX = true     -- 1: Toggle skybox rendering
+local DEBUG_RENDER_TERRAIN = true    -- 2: Toggle terrain rendering
+local DEBUG_RENDER_BUILDINGS = true  -- 3: Toggle building rendering
+local DEBUG_RENDER_SHIP = true       -- 4: Toggle ship rendering
+local DEBUG_RENDER_FX = true         -- 5: Toggle particle effects (flames, smoke, bullets)
+local DEBUG_RENDER_FOG = true        -- 6: Toggle fog effects
 
 -- Cached minimap terrain texture (generated once at startup)
 local minimap_terrain_cache = nil
@@ -933,6 +951,14 @@ function _update()
 		show_controls = not show_controls
 	end
 	last_c_state = key("c")
+
+	-- Debug render toggles (number keys 1-6)
+	if keyp("1") then DEBUG_RENDER_SKYBOX = not DEBUG_RENDER_SKYBOX end
+	if keyp("2") then DEBUG_RENDER_TERRAIN = not DEBUG_RENDER_TERRAIN end
+	if keyp("3") then DEBUG_RENDER_BUILDINGS = not DEBUG_RENDER_BUILDINGS end
+	if keyp("4") then DEBUG_RENDER_SHIP = not DEBUG_RENDER_SHIP end
+	if keyp("5") then DEBUG_RENDER_FX = not DEBUG_RENDER_FX end
+	if keyp("6") then DEBUG_RENDER_FOG = not DEBUG_RENDER_FOG end
 
 	-- Handle pause menu actions
 	if Mission.show_pause_menu then
@@ -1834,70 +1860,88 @@ function _draw()
 		effective_fog_start = WEATHER_FOG_START_DISTANCE
 	end
 
+	-- Debug: disable fog if DEBUG_RENDER_FOG is false
+	if not DEBUG_RENDER_FOG then
+		effective_fog_start = nil  -- nil disables fog in renderer
+	end
+
 	-- Collect all faces from all meshes
 	local all_faces = {}
 
 	-- Render skybox (always at camera position, draws behind everything)
-	local skybox_sorted
-	if Mission.current_mission_num == 6 then
-		-- Mission 6: use special dome skybox with sprite 29 (64x32)
-		-- is_ground=true, is_skybox=true for special pitch-independent culling
-		skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true, nil, nil, nil, nil, nil, true)
-	else
-		-- Other missions: use regular skybox
-		local skybox_sprite = nil
-		if Weather.enabled then
-			-- Mission 5: use cloudy sky (sprite 23)
-			skybox_sprite = 23
+	if DEBUG_RENDER_SKYBOX then
+		profiler("skybox")
+		local skybox_sorted
+		if Mission.current_mission_num == 6 then
+			-- Mission 6: use special dome skybox with sprite 29 (64x32)
+			-- is_ground=true, is_skybox=true for special pitch-independent culling
+			skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true, nil, nil, nil, nil, nil, true)
+		else
+			-- Other missions: use regular skybox
+			local skybox_sprite = nil
+			if Weather.enabled then
+				-- Mission 5: use cloudy sky (sprite 23)
+				skybox_sprite = 23
+			end
+			skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true, nil, nil, nil, nil, nil, true)
 		end
-		skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true, nil, nil, nil, nil, nil, true)
-	end
 
-	for _, f in ipairs(skybox_sorted) do
-		f.depth = 999999  -- Push skybox to back (always draws behind)
-		f.is_skybox = true  -- Mark as skybox to exclude from fog
-		add(all_faces, f)
+		for _, f in ipairs(skybox_sorted) do
+			f.depth = 999999  -- Push skybox to back (always draws behind)
+			f.is_skybox = true  -- Mark as skybox to exclude from fog
+			add(all_faces, f)
+		end
+		profiler("skybox")
 	end
 
 	-- Generate and render ground plane dynamically around camera
-	local ground_verts, ground_faces = generate_ground_around_camera(camera.x, camera.z, effective_render_distance)
+	if DEBUG_RENDER_TERRAIN then
+		profiler("terrain")
+		local ground_verts, ground_faces = generate_ground_around_camera(camera.x, camera.z, effective_render_distance)
 
-	-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
-	local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
-	local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
+		-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
+		local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
+		local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
 
-	-- Update water sprite on all water faces
-	for _, face in ipairs(ground_faces) do
-		if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
-			face[4] = water_sprite
+		-- Update water sprite on all water faces
+		for _, face in ipairs(ground_faces) do
+			if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
+				face[4] = water_sprite
+			end
 		end
-	end
 
-	local ground_sorted = render_mesh(ground_verts, ground_faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
-	for _, f in ipairs(ground_sorted) do
-		add(all_faces, f)
+		local ground_sorted = render_mesh(ground_verts, ground_faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
+		for _, f in ipairs(ground_sorted) do
+			add(all_faces, f)
+		end
+		profiler("terrain")
 	end
 
 	-- Render all buildings
-	for _, building in ipairs(buildings) do
-		local building_faces = render_mesh(
-			building.verts,
-			building.faces,
-			building.x,
-			building.y,
-			building.z,
-			building.sprite_override,
-			false,
-			nil, nil, nil,
-			effective_render_distance,
-			effective_fog_start
-		)
-		for _, f in ipairs(building_faces) do
-			add(all_faces, f)
+	if DEBUG_RENDER_BUILDINGS then
+		profiler("buildings")
+		for _, building in ipairs(buildings) do
+			local building_faces = render_mesh(
+				building.verts,
+				building.faces,
+				building.x,
+				building.y,
+				building.z,
+				building.sprite_override,
+				false,
+				nil, nil, nil,
+				effective_render_distance,
+				effective_fog_start
+			)
+			for _, f in ipairs(building_faces) do
+				add(all_faces, f)
+			end
 		end
+		profiler("buildings")
 	end
 
 	-- Render all landing pads
+	profiler("pads+trees+cargo")
 	for _, pad in ipairs(LandingPads.get_all()) do
 		local pad_faces = render_mesh(
 			pad.verts,
@@ -1962,6 +2006,7 @@ function _draw()
 			end
 		end
 	end
+	profiler("pads+trees+cargo")
 
 	-- Get sphere faces (floating above the city)
 	-- local sphere_sorted = render_mesh(sphere_verts, sphere_faces, 0, 5, 0)
@@ -1970,14 +2015,16 @@ function _draw()
 	-- end
 
 	-- Render smoke particles using particle system (camera-facing billboards)
-	local smoke_faces = smoke_system:render(render_mesh, camera)
-	for _, f in ipairs(smoke_faces) do
-		f.is_vtol = true  -- Mark smoke as VTOL-related
-		add(all_faces, f)
+	if DEBUG_RENDER_FX then
+		local smoke_faces = smoke_system:render(render_mesh, camera)
+		for _, f in ipairs(smoke_faces) do
+			f.is_vtol = true  -- Mark smoke as VTOL-related
+			add(all_faces, f)
+		end
 	end
 
 	-- Render bullets (ONLY FOR MISSION 6)
-	if Mission.current_mission_num == 6 then
+	if Mission.current_mission_num == 6 and DEBUG_RENDER_FX then
 		local bullet_faces = Bullets.render(render_mesh, camera)
 		for _, f in ipairs(bullet_faces) do
 			add(all_faces, f)
@@ -2042,25 +2089,29 @@ function _draw()
 	end
 
 	-- Get filtered faces from Ship module
-	local vtol_faces_filtered = vtol:get_render_faces(use_damage_sprite)
+	if DEBUG_RENDER_SHIP then
+		profiler("ship")
+		local vtol_faces_filtered = vtol:get_render_faces(use_damage_sprite)
 
-	local vtol_sorted = render_mesh(
-		vtol.verts,
-		vtol_faces_filtered,
-		vtol.x,
-		vtol.y,
-		vtol.z,
-		nil,  -- no sprite override
-		false,  -- not ground
-		vtol.pitch,
-		vtol.yaw,
-		vtol.roll,
-		effective_render_distance,
-		effective_fog_start
-	)
-	for _, f in ipairs(vtol_sorted) do
-		f.is_vtol = true  -- Mark VTOL faces
-		add(all_faces, f)
+		local vtol_sorted = render_mesh(
+			vtol.verts,
+			vtol_faces_filtered,
+			vtol.x,
+			vtol.y,
+			vtol.z,
+			nil,  -- no sprite override
+			false,  -- not ground
+			vtol.pitch,
+			vtol.yaw,
+			vtol.roll,
+			effective_render_distance,
+			effective_fog_start
+		)
+		for _, f in ipairs(vtol_sorted) do
+			f.is_vtol = true  -- Mark VTOL faces
+			add(all_faces, f)
+		end
+		profiler("ship")
 	end
 
 	-- Draw ship collision box wireframe (if enabled)
@@ -2122,10 +2173,14 @@ function _draw()
 	end
 
 	-- Sort all faces using Renderer module
+	profiler("sorting")
 	Renderer.sort_faces(all_faces)
+	profiler("sorting")
 
 	-- Draw all faces using Renderer module
-	Renderer.draw_faces(all_faces, false)
+	profiler("drawing")
+	Renderer.draw_faces(all_faces, false, DEBUG_RENDER_FOG)
+	profiler("drawing")
 
 	-- Draw laser beam from turret (100m = 10 units) - simple red line - ALWAYS IN FRONT (ONLY FOR MISSION 6)
 	if Mission.current_mission_num == 6 and Turret.target then
@@ -2158,7 +2213,7 @@ function _draw()
 	end
 
 	-- Draw line particles (mother ship debris) - ALWAYS IN FRONT (ONLY FOR MISSION 6)
-	if Mission.current_mission_num == 6 then
+	if Mission.current_mission_num == 6 and DEBUG_RENDER_FX then
 		for p in all(line_particles) do
 			-- Line particles are small debris lines flying outward
 			-- Draw as short lines from current position in direction of velocity
@@ -2601,7 +2656,7 @@ function _draw()
 	end
 
 	-- Draw speed lines (3D line particles) - disabled when weather is active
-	if not Weather.enabled then
+	if not Weather.enabled and DEBUG_RENDER_FX then
 		for speed_line in all(speed_lines) do
 		-- Transform line position to camera space
 		local lx = speed_line.x - camera.x
@@ -2841,18 +2896,18 @@ function _draw()
 	if show_debug then
 		local cpu = stat(1) * 100
 		local debug_y = 5  -- Same as mission box top
-		print("FPS: "..current_fps, 2, debug_y, 11)
-		print("CPU: "..flr(cpu).."%", 2, debug_y + 8, 11)
-		print("Tris: "..#all_faces, 2, debug_y + 16, 11)
-		print("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled.." (culled: "..objects_culled..")", 2, debug_y + 24, 11)
-		print("VTOL: x="..flr(vtol.x*10)/10 .." y="..flr(vtol.y*10)/10 .." z="..flr(vtol.z*10)/10, 2, debug_y + 32, 10)
+		print_shadow("FPS: "..current_fps, 2, debug_y, 11)
+		print_shadow("CPU: "..flr(cpu).."%", 2, debug_y + 8, 11)
+		print_shadow("Tris: "..#all_faces, 2, debug_y + 16, 11)
+		print_shadow("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled.." (culled: "..objects_culled..")", 2, debug_y + 24, 11)
+		print_shadow("VTOL: x="..flr(vtol.x*10)/10 .." y="..flr(vtol.y*10)/10 .." z="..flr(vtol.z*10)/10, 2, debug_y + 32, 10)
 	end
 
 	-- Velocity debug info
 	if show_debug then
 		local vel_total = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
-		print("VEL: "..flr(vel_total*1000)/1000, 2, 47, 10)
-		print("  vx="..flr(vtol.vx*1000)/1000 .." vy="..flr(vtol.vy*1000)/1000 .." vz="..flr(vtol.vz*1000)/1000, 2, 55, 6)
+		print_shadow("VEL: "..flr(vel_total*1000)/1000, 2, 47, 10)
+		print_shadow("  vx="..flr(vtol.vx*1000)/1000 .." vy="..flr(vtol.vy*1000)/1000 .." vz="..flr(vtol.vz*1000)/1000, 2, 55, 6)
 	end
 
 
@@ -2861,5 +2916,21 @@ function _draw()
 	-- Draw rain as lines (if weather enabled)
 	if Weather.enabled then
 		Weather.draw_rain_lines(camera, vtol)
+	end
+
+	-- Debug: Show render toggle states
+	if show_debug then
+		local debug_x = 2
+		local debug_y = 70
+		print_shadow("RENDER TOGGLES (1-6):", debug_x, debug_y, 11)
+		print_shadow("1:Sky=" .. (DEBUG_RENDER_SKYBOX and "ON" or "OFF"), debug_x, debug_y + 8, DEBUG_RENDER_SKYBOX and 11 or 8)
+		print_shadow("2:Ter=" .. (DEBUG_RENDER_TERRAIN and "ON" or "OFF"), debug_x, debug_y + 16, DEBUG_RENDER_TERRAIN and 11 or 8)
+		print_shadow("3:Bld=" .. (DEBUG_RENDER_BUILDINGS and "ON" or "OFF"), debug_x, debug_y + 24, DEBUG_RENDER_BUILDINGS and 11 or 8)
+		print_shadow("4:Shp=" .. (DEBUG_RENDER_SHIP and "ON" or "OFF"), debug_x, debug_y + 32, DEBUG_RENDER_SHIP and 11 or 8)
+		print_shadow("5:FX =" .. (DEBUG_RENDER_FX and "ON" or "OFF"), debug_x, debug_y + 40, DEBUG_RENDER_FX and 11 or 8)
+		print_shadow("6:Fog=" .. (DEBUG_RENDER_FOG and "ON" or "OFF"), debug_x, debug_y + 48, DEBUG_RENDER_FOG and 11 or 8)
+
+		-- Display profiler results
+		profiler.draw()
 	end
 end

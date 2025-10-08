@@ -56,7 +56,8 @@ function Minimap.generate_terrain_cache(heightmap)
 	end
 
 	-- Get heightmap data
-	local heightmap_data = get_spr(heightmap.SPRITE_INDEX)
+	local sprite_id = type(heightmap.SPRITE_INDEX) == "table" and heightmap.SPRITE_INDEX[1] or heightmap.SPRITE_INDEX
+	local heightmap_data = get_spr(sprite_id)
 	if not heightmap_data then
 		return nil
 	end

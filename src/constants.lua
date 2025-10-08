@@ -1,28 +1,28 @@
 -- Sprite Constants (shared across all modules)
 local Constants = {}
 
--- Sprite indices
-Constants.SPRITE_CUBE = 0
-Constants.SPRITE_SPHERE = 1
-Constants.SPRITE_GROUND = 14  -- Terrain texture (32x32)
-Constants.SPRITE_FLAME = 3
-Constants.SPRITE_SMOKE = 5
-Constants.SPRITE_TREES = 6
-Constants.SPRITE_LANDING_PAD = 8
-Constants.SPRITE_SHIP = 9
-Constants.SPRITE_SHIP_DAMAGE = 10
-Constants.SPRITE_SKYBOX = 11
-Constants.SPRITE_WATER = 12
-Constants.SPRITE_WATER2 = 13
-Constants.SPRITE_GRASS = 15  -- Grass texture for elevation 3+ (32x32)
-Constants.SPRITE_ROCKS = 16  -- Rock texture for elevation 10+ (32x32)
-Constants.SPRITE_ROOFTOP = 17  -- Building rooftop texture (32x32)
-Constants.SPRITE_BUILDING_SIDE = 18  -- Building side texture - nine-sliced and tiled (32x32)
-Constants.SPRITE_BUILDING_SIDE_ALT = 19  -- Alternate building side texture (32x32)
-Constants.SPRITE_CARGO = 20  -- Cargo pickup object texture (32x32)
-Constants.SPRITE_PLANET = 21  -- Planet texture for menu background (64x32)
-Constants.SPRITE_CLOUDS = 22  -- Cloud layer texture for menu planet (64x32)
-Constants.SPRITE_HEIGHTMAP = 64  -- Heightmap data source (128x128)
+-- Sprite configuration: {id, width, height}
+Constants.SPRITE_CUBE = {0, 32, 32}
+Constants.SPRITE_SPHERE = {1, 32, 32}
+Constants.SPRITE_GROUND = {14, 32, 32}  -- Terrain texture
+Constants.SPRITE_FLAME = {3, 32, 32}
+Constants.SPRITE_SMOKE = {5, 32, 32}
+Constants.SPRITE_TREES = {6, 32, 32}
+Constants.SPRITE_LANDING_PAD = {8, 32, 32}
+Constants.SPRITE_SHIP = {9, 64, 64}
+Constants.SPRITE_SHIP_DAMAGE = {10, 64, 64}
+Constants.SPRITE_SKYBOX = {11, 32, 32}
+Constants.SPRITE_WATER = {12, 32, 32}
+Constants.SPRITE_WATER2 = {13, 32, 32}
+Constants.SPRITE_GRASS = {15, 32, 32}  -- Grass texture for elevation 3+
+Constants.SPRITE_ROCKS = {16, 32, 32}  -- Rock texture for elevation 10+
+Constants.SPRITE_ROOFTOP = {17, 32, 32}  -- Building rooftop texture
+Constants.SPRITE_BUILDING_SIDE = {18, 32, 32}  -- Building side texture - nine-sliced and tiled
+Constants.SPRITE_BUILDING_SIDE_ALT = {19, 32, 32}  -- Alternate building side texture
+Constants.SPRITE_CARGO = {20, 32, 32}  -- Cargo pickup object texture
+Constants.SPRITE_PLANET = {21, 64, 32}  -- Planet texture for menu background
+Constants.SPRITE_CLOUDS = {22, 64, 32}  -- Cloud layer texture for menu planet
+Constants.SPRITE_HEIGHTMAP = {64, 128, 128}  -- Heightmap data source
 
 -- Landing pad names
 Constants.LANDING_PAD_NAMES = {

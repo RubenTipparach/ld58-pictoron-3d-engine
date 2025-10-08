@@ -64,13 +64,10 @@ function Cargo.create(config)
 		}
 	end
 
-	-- Override sprite to SPRITE_CARGO (32x32)
+	-- Override sprite to SPRITE_CARGO (16x16)
 	for _, face in ipairs(cargo_mesh.faces) do
 		face[4] = Constants.SPRITE_CARGO
-		-- Scale UVs to 32x32 if needed
-		if face[5] then face[5] = vec(face[5].x * 2, face[5].y * 2) end
-		if face[6] then face[6] = vec(face[6].x * 2, face[6].y * 2) end
-		if face[7] then face[7] = vec(face[7].x * 2, face[7].y * 2) end
+		-- UVs already set to 16x16 in mesh definition
 	end
 
 	return {
