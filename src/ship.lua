@@ -1,5 +1,5 @@
 -- Ship module: VTOL vehicle with physics
-local load_obj = include("engine/obj_loader.lua")
+local load_obj = include("src/engine/obj_loader.lua")
 local Constants = include("src/constants.lua")
 
 local Ship = {}

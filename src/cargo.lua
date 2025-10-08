@@ -43,7 +43,7 @@ function Cargo.create(config)
 	end
 
 	-- Load cargo mesh from OBJ file
-	local load_obj = include("engine/obj_loader.lua")
+	local load_obj = include("src/engine/obj_loader.lua")
 	local cargo_mesh = load_obj("cargo.obj")
 
 	-- Fallback cube if OBJ doesn't load

@@ -5,7 +5,7 @@ local LandingPads = {}
 
 -- Import heightmap for automatic height adjustment
 local Heightmap = include("src/heightmap.lua")
-local Collision = include("engine/collision.lua")
+local Collision = include("src/engine/collision.lua")
 local Constants = include("src/constants.lua")
 
 -- List of all landing pads in the world
