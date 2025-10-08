@@ -844,25 +844,40 @@ end
 -- draw_collision_wireframe is now in Collision module
 
 -- Wrapper for render_mesh to track culling stats and use Renderer module
-local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, fog_start_distance, is_skybox)
+local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, fog_start_distance, is_skybox, no_cull)
 	-- Use provided render distance or default
 	local effective_render_distance = render_distance or RENDER_DISTANCE
 	-- Use provided fog start distance or default
 	local effective_fog_distance = fog_start_distance or FOG_START_DISTANCE
 
-	-- Early culling check
+	-- Early culling checks for non-terrain objects
 	local obj_x = offset_x or 0
+	local obj_y = offset_y or 0
 	local obj_z = offset_z or 0
-	local dx = obj_x - camera.x
-	local dz = obj_z - camera.z
-	local dist_sq = dx*dx + dz*dz
 
-	if not is_ground and dist_sq > effective_render_distance * effective_render_distance then
-		objects_culled += 1
-		return {}
+	-- Skip culling for special objects (ship, skybox, etc.)
+	if not is_ground and not is_skybox and not no_cull then
+		-- Distance culling
+		local dx = obj_x - camera.x
+		local dz = obj_z - camera.z
+		local dist_sq = dx*dx + dz*dz
+
+		if dist_sq > effective_render_distance * effective_render_distance then
+			objects_culled += 1
+			return {}
+		end
+
+		-- Camera-facing culling (dot product)
+		if Renderer.object_facing_cull(obj_x, obj_y, obj_z, camera) then
+			objects_culled += 1
+			return {}
+		end
 	end
 
-	objects_rendered += 1
+	-- Only count non-terrain objects (terrain has its own counters)
+	if not is_ground then
+		objects_rendered += 1
+	end
 
 	return Renderer.render_mesh(
 		verts, faces, camera,
@@ -1859,23 +1874,36 @@ function _draw()
 		add(all_faces, f)
 	end
 
-	-- Generate and render ground plane dynamically around camera
-	local ground_verts, ground_faces = generate_ground_around_camera(camera.x, camera.z, effective_render_distance)
+	-- Generate terrain tiles with bounding boxes for culling
+	local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
 
 	-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
 	local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
 	local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
 
-	-- Update water sprite on all water faces
-	for _, face in ipairs(ground_faces) do
-		if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
-			face[4] = water_sprite
-		end
-	end
+	-- Render terrain tiles with distance culling
+	local terrain_tiles_rendered = 0
+	local terrain_tiles_culled = 0
+	for _, tile in ipairs(terrain_tiles) do
+		-- Distance cull terrain tiles based on center point and height
+		-- Taller tiles are visible from farther away
+		if not Renderer.tile_distance_cull(tile.center_x, tile.center_z, tile.height, camera, effective_render_distance) then
+			-- Update water sprite on water faces
+			for _, face in ipairs(tile.faces) do
+				if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
+					face[4] = water_sprite
+				end
+			end
 
-	local ground_sorted = render_mesh(ground_verts, ground_faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
-	for _, f in ipairs(ground_sorted) do
-		add(all_faces, f)
+			-- Render tile (each tile has its own verts/faces)
+			local tile_sorted = render_mesh(tile.verts, tile.faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
+			for _, f in ipairs(tile_sorted) do
+				add(all_faces, f)
+			end
+			terrain_tiles_rendered += 1
+		else
+			terrain_tiles_culled += 1
+		end
 	end
 
 	-- Render all buildings
@@ -2056,7 +2084,9 @@ function _draw()
 		vtol.yaw,
 		vtol.roll,
 		effective_render_distance,
-		effective_fog_start
+		effective_fog_start,
+		false,  -- is_skybox
+		true    -- no_cull - ship should never be culled
 	)
 	for _, f in ipairs(vtol_sorted) do
 		f.is_vtol = true  -- Mark VTOL faces
@@ -2837,22 +2867,28 @@ function _draw()
 		print(hint_text, hint_box_x + 3, hint_box_y + 3, 7)
 	end
 	
-	-- Performance info (on top of mission box)
+	-- Performance info (right side, below minimap)
 	if show_debug then
 		local cpu = stat(1) * 100
-		local debug_y = 5  -- Same as mission box top
-		print("FPS: "..current_fps, 2, debug_y, 11)
-		print("CPU: "..flr(cpu).."%", 2, debug_y + 8, 11)
-		print("Tris: "..#all_faces, 2, debug_y + 16, 11)
-		print("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled.." (culled: "..objects_culled..")", 2, debug_y + 24, 11)
-		print("VTOL: x="..flr(vtol.x*10)/10 .." y="..flr(vtol.y*10)/10 .." z="..flr(vtol.z*10)/10, 2, debug_y + 32, 10)
-	end
+		local debug_x = 320  -- Right side of screen
+		local debug_y = 80   -- Below minimap (minimap is at y=10, size=64, so 10+64+6=80)
 
-	-- Velocity debug info
-	if show_debug then
+		print("FPS: "..current_fps, debug_x, debug_y, 11)
+		print("CPU: "..flr(cpu).."%", debug_x, debug_y + 8, 11)
+		print("Tris: "..#all_faces, debug_x, debug_y + 16, 11)
+		print("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled, debug_x, debug_y + 24, 11)
+		print("  culled: "..objects_culled, debug_x, debug_y + 32, 10)
+		print("Terrain: "..terrain_tiles_rendered.."/"..terrain_tiles_rendered+terrain_tiles_culled, debug_x, debug_y + 40, 11)
+		print("  culled: "..terrain_tiles_culled, debug_x, debug_y + 48, 10)
+		print("VTOL: x="..flr(vtol.x*10)/10, debug_x, debug_y + 56, 10)
+		print("      y="..flr(vtol.y*10)/10, debug_x, debug_y + 64, 10)
+		print("      z="..flr(vtol.z*10)/10, debug_x, debug_y + 72, 10)
+
 		local vel_total = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
-		print("VEL: "..flr(vel_total*1000)/1000, 2, 47, 10)
-		print("  vx="..flr(vtol.vx*1000)/1000 .." vy="..flr(vtol.vy*1000)/1000 .." vz="..flr(vtol.vz*1000)/1000, 2, 55, 6)
+		print("VEL: "..flr(vel_total*1000)/1000, debug_x, debug_y + 80, 10)
+		print("  vx="..flr(vtol.vx*1000)/1000, debug_x, debug_y + 88, 6)
+		print("  vy="..flr(vtol.vy*1000)/1000, debug_x, debug_y + 96, 6)
+		print("  vz="..flr(vtol.vz*1000)/1000, debug_x, debug_y + 104, 6)
 	end
 
 
