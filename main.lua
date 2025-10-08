@@ -7,7 +7,7 @@ local mission_testing = false  -- If true, all missions are unlocked
 local game_mode = "arcade"  -- "arcade" or "simulation"
 
 -- UI toggles
-local show_debug = true
+local show_debug = false
 local show_mission_ui = true
 local show_ship_collision_box = false  -- Toggle ship collision wireframe
 local show_cargo_debug = false  -- Toggle cargo debug info (temporary for Mission 3 debug)
@@ -160,7 +160,7 @@ local SIM_VTOL_TORQUE_ROLL = 0.001  -- Stronger roll torque
 local SIM_VTOL_MASS = 30
 local SIM_VTOL_GRAVITY = -0.005
 local SIM_VTOL_DAMPING = 0.95  -- Less air resistance (drifts more)
-local SIM_VTOL_ANGULAR_DAMPING = 0.95 -- Less rotational drag (spins more)
+local SIM_VTOL_ANGULAR_DAMPING = 0.85 -- Less rotational drag (spins more)
 local SIM_VTOL_GROUND_PITCH_DAMPING = 0.8  -- Less ground damping
 local SIM_VTOL_GROUND_ROLL_DAMPING = 0.8   -- Less ground damping
 
@@ -2673,10 +2673,7 @@ function _draw()
 		effective_fog_start = WEATHER_FOG_START_DISTANCE
 	end
 
-	-- Extract frustum planes for culling (DISABLED - needs proper implementation)
-	-- profile("render:frustum_extract")
-	-- local frustum = Frustum.extract_planes(camera, 70, 480/270, 0.01, effective_render_distance)
-	-- profile("render:frustum_extract")
+	-- Frustum culling uses simple clip space test (no plane extraction needed)
 
 	-- Collect all faces from all meshes
 	local all_faces = {}
@@ -2720,11 +2717,25 @@ function _draw()
 		local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
 		local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
 
+		profile("render:frustum_cull")
 		for _, tile in ipairs(terrain_tiles) do
+			-- Calculate distance to tile for nearby check
+			local dx = tile.center_x - camera.x
+			local dz = tile.center_z - camera.z
+			local dist_sq = dx*dx + dz*dz
+			local is_nearby = dist_sq < 100  -- Within 10 units, skip frustum culling
+
+			-- Frustum cull using simple AABB clip space test (skip for nearby tiles)
+			local in_frustum = is_nearby or Frustum.test_aabb_simple(
+				camera, 70, 480/270, 0.01, effective_render_distance,
+				tile.bounds.min_x, tile.bounds.min_y, tile.bounds.min_z,
+				tile.bounds.max_x, tile.bounds.max_y, tile.bounds.max_z
+			)
+
 			-- Distance cull terrain tiles based on center point and height
 			local distance_culled = Renderer.tile_distance_cull(tile.center_x, tile.center_z, tile.height, camera, effective_render_distance)
 
-			if not distance_culled then
+			if in_frustum and not distance_culled then
 				-- Update water sprite on water faces
 				for _, face in ipairs(tile.faces) do
 					if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
@@ -2742,29 +2753,58 @@ function _draw()
 				terrain_tiles_culled += 1
 			end
 		end
+		profile("render:frustum_cull")
 		profile("render:terrain")
 	end
 
 	-- Render all buildings
 	profile("render:buildings")
 	if debug_toggles.buildings then
-		for _, building in ipairs(buildings) do
-			local building_faces = render_mesh(
-				building.verts,
-				building.faces,
-				building.x,
-				building.y,
-				building.z,
-				building.sprite_override,
-				false,
-				nil, nil, nil,
-				effective_render_distance,
-				effective_fog_start
-			)
-			for _, f in ipairs(building_faces) do
-				add(all_faces, f)
+		profile("render:frustum_cull")
+		for i, building in ipairs(buildings) do
+			-- Get building dimensions from config
+			local config = building_configs[i]
+			if config then
+				-- Calculate distance for nearby check
+				local dx = building.x - camera.x
+				local dz = building.z - camera.z
+				local dist_sq = dx*dx + dz*dz
+				local is_nearby = dist_sq < 100  -- Within 10 units, skip frustum culling
+
+				-- Calculate AABB bounds for building
+				local min_x = building.x - config.width
+				local max_x = building.x + config.width
+				local min_y = building.y
+				local max_y = building.y + config.height * 2
+				local min_z = building.z - config.depth
+				local max_z = building.z + config.depth
+
+				-- Frustum cull using simple AABB clip space test (skip for nearby buildings)
+				local in_frustum = is_nearby or Frustum.test_aabb_simple(
+					camera, 70, 480/270, 0.01, effective_render_distance,
+					min_x, min_y, min_z, max_x, max_y, max_z
+				)
+
+				if in_frustum then
+					local building_faces = render_mesh(
+						building.verts,
+						building.faces,
+						building.x,
+						building.y,
+						building.z,
+						building.sprite_override,
+						false,
+						nil, nil, nil,
+						effective_render_distance,
+						effective_fog_start
+					)
+					for _, f in ipairs(building_faces) do
+						add(all_faces, f)
+					end
+				end
 			end
 		end
+		profile("render:frustum_cull")
 	end
 	profile("render:buildings")
 

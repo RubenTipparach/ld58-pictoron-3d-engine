@@ -162,17 +162,66 @@ local function is_on_or_forward_plane(plane, center_x, center_y, center_z, exten
 	return -r <= signed_distance_to_plane(plane, center_x, center_y, center_z)
 end
 
--- Test if AABB is inside frustum
--- Returns true if AABB is visible (inside or intersecting frustum)
-function Frustum.test_aabb(frustum, center_x, center_y, center_z, extents_x, extents_y, extents_z)
-	-- Test against all 6 frustum planes
-	-- AABB must be on the forward side of ALL planes to be visible
-	return is_on_or_forward_plane(frustum.left, center_x, center_y, center_z, extents_x, extents_y, extents_z) and
-	       is_on_or_forward_plane(frustum.right, center_x, center_y, center_z, extents_x, extents_y, extents_z) and
-	       is_on_or_forward_plane(frustum.top, center_x, center_y, center_z, extents_x, extents_y, extents_z) and
-	       is_on_or_forward_plane(frustum.bottom, center_x, center_y, center_z, extents_x, extents_y, extents_z) and
-	       is_on_or_forward_plane(frustum.near, center_x, center_y, center_z, extents_x, extents_y, extents_z) and
-	       is_on_or_forward_plane(frustum.far, center_x, center_y, center_z, extents_x, extents_y, extents_z)
+-- Simple helper to check if value is within range
+local function within(min_val, val, max_val)
+	return val >= min_val and val <= max_val
+end
+
+-- Test if AABB is inside frustum using clip space test
+-- Much simpler than plane-based approach - just transform 8 corners and check bounds
+-- Returns true if AABB is visible (at least one corner inside clip space)
+function Frustum.test_aabb_simple(camera, fov, aspect, near_plane, far_plane, min_x, min_y, min_z, max_x, max_y, max_z)
+	-- Define 8 corners of AABB
+	local corners = {
+		{min_x, min_y, min_z},  -- xyz
+		{max_x, min_y, min_z},  -- Xyz
+		{min_x, max_y, min_z},  -- xYz
+		{max_x, max_y, min_z},  -- XYz
+		{min_x, min_y, max_z},  -- xyZ
+		{max_x, min_y, max_z},  -- XyZ
+		{min_x, max_y, max_z},  -- xYZ
+		{max_x, max_y, max_z},  -- XYZ
+	}
+
+	-- Transform to view space and check clip space bounds
+	local fov_rad = fov * 0.0174533  -- degrees to radians
+	local tan_half_fov = sin(fov_rad * 0.5) / cos(fov_rad * 0.5)
+
+	for _, corner in ipairs(corners) do
+		local wx, wy, wz = corner[1], corner[2], corner[3]
+
+		-- Transform to camera space
+		local cx = wx - camera.x
+		local cy = wy - camera.y
+		local cz = wz - camera.z
+
+		-- Rotate by camera yaw
+		local cos_yaw = cos(camera.ry)
+		local sin_yaw = sin(camera.ry)
+		local vx = cx * cos_yaw - cz * sin_yaw
+		local vz = cx * sin_yaw + cz * cos_yaw
+
+		-- Rotate by camera pitch
+		local cos_pitch = cos(camera.rx)
+		local sin_pitch = sin(camera.rx)
+		local vy = cy * cos_pitch - vz * sin_pitch
+		local ez = cy * sin_pitch + vz * cos_pitch
+
+		-- Check if corner is in clip space (w is the depth)
+		local w = ez
+		if w > 0 then  -- In front of camera
+			-- Project to NDC
+			local x = vx / (w * tan_half_fov * aspect)
+			local y = vy / (w * tan_half_fov)
+
+			-- Check if inside clip space bounds with margin to prevent popping (relaxed from [-1,1] to [-1.2,1.2])
+			if within(-1.2, x, 1.2) and within(-1.2, y, 1.2) and within(near_plane, w, far_plane) then
+				return true  -- At least one corner is visible
+			end
+		end
+	end
+
+	return false  -- All corners outside frustum
 end
 
 return Frustum

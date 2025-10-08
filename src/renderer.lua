@@ -305,7 +305,13 @@ end
 -- @param ship_flash_red: whether to flash ship sprite red (optional)
 function Renderer.draw_faces(all_faces, ship_flash_red)
 	-- Draw all faces in sorted order (reuse pooled userdata)
+	profile("draw:setup")
+	local setup_count = 0
+	local textri_count = 0
+	profile("draw:setup")
+
 	for _, f in ipairs(all_faces) do
+		profile("draw:setup")
 		local face = f.face
 		local sprite_id = face[4]
 		local uv1 = face[5] or vec(0,0)
@@ -373,8 +379,13 @@ function Renderer.draw_faces(all_faces, ship_flash_red)
 				fillp(0b1000000010000000)  -- Fewest 1s = least transparent (barely fogged)
 			end
 		end
+		setup_count += 1
+		profile("draw:setup")
 
+		profile("draw:textri")
 		Renderer.textri({tex = render_sprite}, vert_data_pool, 270)
+		textri_count += 1
+		profile("draw:textri")
 	end
 
 	fillp()  -- Reset fill pattern after drawing
