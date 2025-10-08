@@ -12,14 +12,17 @@ local show_mission_ui = true
 local show_ship_collision_box = false  -- Toggle ship collision wireframe
 local show_cargo_debug = false  -- Toggle cargo debug info (temporary for Mission 3 debug)
 
--- Debug menu toggles (toggle with number keys 1-6)
+-- Debug menu toggles (toggle with number keys 1-9)
 local debug_toggles = {
 	player_ship = true,    -- 1: Toggle player ship rendering
 	skybox = true,         -- 2: Toggle skybox rendering
 	fog = true,            -- 3: Toggle fog effect
-	fps_info = true,       -- 4: Toggle FPS/performance info
+	debug_stats = true,    -- 4: Toggle debug stats/performance info
 	buildings = true,      -- 5: Toggle building rendering
-	terrain = true         -- 6: Toggle terrain rendering
+	terrain = true,        -- 6: Toggle terrain rendering
+	fx = true,             -- 7: Toggle FX (particles, smoke, rain lines)
+	ui = true,             -- 8: Toggle UI (HUD, compass, health bar, etc)
+	bbox = false           -- 9: Toggle bounding box visualization
 }
 
 -- Ship collision box dimensions
@@ -52,7 +55,8 @@ local function get_ship_collision_dimensions(cargo_objects)
 end
 
 -- Load modules
-local Profiler = include("src/profiler.lua")
+include("src/profiler.lua")
+profile.enabled(true, true)
 local load_obj = include("src/obj_loader.lua")
 local ParticleSystem = include("src/particle_system.lua")
 local MathUtils = include("src/math_utils.lua")
@@ -968,7 +972,7 @@ function _update()
 	end
 	last_c_state = key("c")
 
-	-- Debug menu toggles (number keys 1-6)
+	-- Debug menu toggles (number keys 1-7)
 	if key("1") and not (last_1_state) then
 		debug_toggles.player_ship = not debug_toggles.player_ship
 	end
@@ -985,7 +989,7 @@ function _update()
 	last_3_state = key("3")
 
 	if key("4") and not (last_4_state) then
-		debug_toggles.fps_info = not debug_toggles.fps_info
+		debug_toggles.debug_stats = not debug_toggles.debug_stats
 	end
 	last_4_state = key("4")
 
@@ -998,6 +1002,21 @@ function _update()
 		debug_toggles.terrain = not debug_toggles.terrain
 	end
 	last_6_state = key("6")
+
+	if key("7") and not (last_7_state) then
+		debug_toggles.fx = not debug_toggles.fx
+	end
+	last_7_state = key("7")
+
+	if key("8") and not (last_8_state) then
+		debug_toggles.ui = not debug_toggles.ui
+	end
+	last_8_state = key("8")
+
+	if key("9") and not (last_9_state) then
+		debug_toggles.bbox = not debug_toggles.bbox
+	end
+	last_9_state = key("9")
 
 	-- Handle pause menu actions
 	if Mission.show_pause_menu then
@@ -1402,6 +1421,7 @@ function _update()
 
 
 	-- Building collision (check for rooftop landings and side collisions)
+	profile("physics:bbox_bldg")
 	local ground_height = 0  -- Track the highest surface beneath the VTOL
 	current_building = nil  -- Reset current building
 
@@ -1457,8 +1477,10 @@ function _update()
 			end
 		end
 	end
+	profile("physics:bbox_bldg")
 
 	-- Landing pad collision for all pads using collision objects
+	profile("physics:bbox_pads")
 	for _, pad in ipairs(LandingPads.get_all()) do
 		if pad.collision then
 			local bounds = pad.collision:get_bounds()
@@ -1494,8 +1516,10 @@ function _update()
 			end
 		end
 	end
+	profile("physics:bbox_pads")
 
 	-- Ground/rooftop collision (use 0.5 offset for VTOL center)
+	profile("physics:terrain")
 	-- If using heightmap, sample terrain height at VTOL position
 	local terrain_height = 0
 	if USE_HEIGHTMAP then
@@ -1580,6 +1604,7 @@ function _update()
 	else
 		repair_timer = 0
 	end
+	profile("physics:terrain")
 
 	-- Smoke particle spawning (only when damaged)
 	local health_percent = vtol.health / vtol.max_health * 100
@@ -1886,9 +1911,6 @@ function _draw()
 	-- Update FPS counter (count rendered frames)
   	current_fps = stat(7)
 
-	-- Reset profiler at start of frame
-	Profiler.reset()
-
 	-- Reset culling counters
 	objects_rendered = 0
 	objects_culled = 0
@@ -1905,7 +1927,7 @@ function _draw()
 	local all_faces = {}
 
 	-- Render skybox (always at camera position, draws behind everything)
-	Profiler.start("render:skybox")
+	profile("render:skybox")
 	if debug_toggles.skybox then
 		local skybox_sorted
 		if Mission.current_mission_num == 6 then
@@ -1928,16 +1950,16 @@ function _draw()
 			add(all_faces, f)
 		end
 	end
-	Profiler.stop("render:skybox")
+	profile("render:skybox")
 
 	-- Generate terrain tiles with bounding boxes for culling
-	Profiler.start("terrain:gen")
+	profile("terrain:gen")
 	local terrain_tiles_rendered = 0
 	local terrain_tiles_culled = 0
 	if debug_toggles.terrain then
 		local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
-		Profiler.stop("terrain:gen")
-		Profiler.start("render:terrain")
+		profile("terrain:gen")
+		profile("render:terrain")
 
 		-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
 		local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
@@ -1965,13 +1987,13 @@ function _draw()
 				terrain_tiles_culled += 1
 			end
 		end
-		Profiler.stop("render:terrain")
+		profile("render:terrain")
 	else
-		Profiler.stop("terrain:gen")
+		profile("terrain:gen")
 	end
 
 	-- Render all buildings
-	Profiler.start("render:buildings")
+	profile("render:buildings")
 	if debug_toggles.buildings then
 		for _, building in ipairs(buildings) do
 			local building_faces = render_mesh(
@@ -1991,10 +2013,10 @@ function _draw()
 			end
 		end
 	end
-	Profiler.stop("render:buildings")
+	profile("render:buildings")
 
 	-- Render all landing pads
-	Profiler.start("render:pads")
+	profile("render:pads")
 	for _, pad in ipairs(LandingPads.get_all()) do
 		local pad_faces = render_mesh(
 			pad.verts,
@@ -2012,7 +2034,7 @@ function _draw()
 			add(all_faces, f)
 		end
 	end
-	Profiler.stop("render:pads")
+	profile("render:pads")
 
 	-- Render all trees
 	for _, tree in ipairs(trees) do
@@ -2034,7 +2056,7 @@ function _draw()
 	end
 
 	-- Render all cargo objects (with animation and scaling)
-	Profiler.start("render:cargo")
+	profile("render:cargo")
 	for cargo in all(Mission.cargo_objects) do
 		-- Skip only if delivered (show when attached)
 		if cargo.state ~= "delivered" then
@@ -2061,7 +2083,7 @@ function _draw()
 			end
 		end
 	end
-	Profiler.stop("render:cargo")
+	profile("render:cargo")
 
 	-- Get sphere faces (floating above the city)
 	-- local sphere_sorted = render_mesh(sphere_verts, sphere_faces, 0, 5, 0)
@@ -2070,13 +2092,15 @@ function _draw()
 	-- end
 
 	-- Render smoke particles using particle system (camera-facing billboards)
-	Profiler.start("render:particles")
-	local smoke_faces = smoke_system:render(render_mesh, camera)
-	for _, f in ipairs(smoke_faces) do
-		f.is_vtol = true  -- Mark smoke as VTOL-related
-		add(all_faces, f)
+	profile("render:particles")
+	if debug_toggles.fx then
+		local smoke_faces = smoke_system:render(render_mesh, camera)
+		for _, f in ipairs(smoke_faces) do
+			f.is_vtol = true  -- Mark smoke as VTOL-related
+			add(all_faces, f)
+		end
 	end
-	Profiler.stop("render:particles")
+	profile("render:particles")
 
 	-- Render bullets (ONLY FOR MISSION 6)
 	if Mission.current_mission_num == 6 then
@@ -2086,7 +2110,7 @@ function _draw()
 		end
 
 		-- Render aliens
-		Profiler.start("render:aliens")
+		profile("render:aliens")
 		for alien in all(Aliens.get_all()) do
 			local alien_mesh = alien.type == "fighter" and ufo_fighter_mesh or ufo_mother_mesh
 			if alien_mesh and alien_mesh.verts then
@@ -2109,7 +2133,7 @@ function _draw()
 				end
 			end
 		end
-		Profiler.stop("render:aliens")
+		profile("render:aliens")
 	end
 
 	-- Render turret (attached to ship, using proper mount position and quaternion rotation) (ONLY FOR MISSION 6)
@@ -2139,7 +2163,7 @@ function _draw()
 	-- Uncomment to enable turret debug visualization
 
 	-- Calculate if ship should flash (critically damaged)
-	Profiler.start("render:ship")
+	profile("render:ship")
 	if debug_toggles.player_ship then
 		local health_percent = vtol.health / vtol.max_health
 		local use_damage_sprite = false
@@ -2171,10 +2195,10 @@ function _draw()
 			add(all_faces, f)
 		end
 	end
-	Profiler.stop("render:ship")
+	profile("render:ship")
 
 	-- Draw ship collision box wireframe (if enabled)
-	if show_ship_collision_box then
+	if debug_toggles.bbox then
 		local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
 
 		Collision.draw_wireframe(
@@ -2232,14 +2256,14 @@ function _draw()
 	end
 
 	-- Sort all faces using Renderer module
-	Profiler.start("render:sort")
+	profile("render:sort")
 	Renderer.sort_faces(all_faces)
-	Profiler.stop("render:sort")
+	profile("render:sort")
 
 	-- Draw all faces using Renderer module
-	Profiler.start("render:draw")
+	profile("render:draw")
 	Renderer.draw_faces(all_faces, false)
-	Profiler.stop("render:draw")
+	profile("render:draw")
 
 	-- Draw laser beam from turret (100m = 10 units) - simple red line - ALWAYS IN FRONT (ONLY FOR MISSION 6)
 	if Mission.current_mission_num == 6 and Turret.target then
@@ -2272,7 +2296,7 @@ function _draw()
 	end
 
 	-- Draw line particles (mother ship debris) - ALWAYS IN FRONT (ONLY FOR MISSION 6)
-	if Mission.current_mission_num == 6 then
+	if Mission.current_mission_num == 6 and debug_toggles.fx then
 		for p in all(line_particles) do
 			-- Line particles are small debris lines flying outward
 			-- Draw as short lines from current position in direction of velocity
@@ -2292,8 +2316,61 @@ function _draw()
 		end
 	end
 
+	profile("ui:draw")
+
+	-- Performance info (right side, below minimap) - ALWAYS SHOW (not affected by UI toggle)
+	if show_debug and debug_toggles.debug_stats then
+		local cpu = stat(1) * 100
+		local debug_x = 320  -- Right side of screen
+		local debug_y = 20   -- Below minimap (minimap is at y=10, size=64, so 10+64+6=80)
+
+		print_shadow("FPS: "..current_fps, debug_x, debug_y, 11)
+		print_shadow("CPU: "..flr(cpu).."%", debug_x, debug_y + 8, 11)
+		print_shadow("Tris: "..#all_faces, debug_x, debug_y + 16, 11)
+		print_shadow("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled, debug_x, debug_y + 24, 11)
+		print_shadow("  culled: "..objects_culled, debug_x, debug_y + 32, 10)
+		print_shadow("Terrain: "..terrain_tiles_rendered.."/"..terrain_tiles_rendered+terrain_tiles_culled, debug_x, debug_y + 40, 11)
+		print_shadow("  culled: "..terrain_tiles_culled, debug_x, debug_y + 48, 10)
+		print_shadow("VTOL: x="..flr(vtol.x*10)/10, debug_x, debug_y + 56, 10)
+		print_shadow("      y="..flr(vtol.y*10)/10, debug_x, debug_y + 64, 10)
+		print_shadow("      z="..flr(vtol.z*10)/10, debug_x, debug_y + 72, 10)
+
+		local vel_total = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
+		print_shadow("VEL: "..flr(vel_total*1000)/1000, debug_x, debug_y + 80, 10)
+		print_shadow("  vx="..flr(vtol.vx*1000)/1000, debug_x, debug_y + 88, 6)
+		print_shadow("  vy="..flr(vtol.vy*1000)/1000, debug_x, debug_y + 96, 6)
+		print_shadow("  vz="..flr(vtol.vz*1000)/1000, debug_x, debug_y + 104, 6)
+
+		-- Debug toggle menu
+		local toggle_y = debug_y + 120
+		print_shadow("DEBUG TOGGLES:", debug_x, toggle_y, 11)
+		toggle_y += 10
+		print_shadow("1:Ship    "..(debug_toggles.player_ship and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.player_ship and 11 or 6)
+		toggle_y += 8
+		print_shadow("2:Skybox  "..(debug_toggles.skybox and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.skybox and 11 or 6)
+		toggle_y += 8
+		print_shadow("3:Fog     "..(debug_toggles.fog and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.fog and 11 or 6)
+		toggle_y += 8
+		print_shadow("4:Stats   "..(debug_toggles.debug_stats and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.debug_stats and 11 or 6)
+		toggle_y += 8
+		print_shadow("5:Bldgs   "..(debug_toggles.buildings and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.buildings and 11 or 6)
+		toggle_y += 8
+		print_shadow("6:Terrain "..(debug_toggles.terrain and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.terrain and 11 or 6)
+		toggle_y += 8
+		print_shadow("7:FX      "..(debug_toggles.fx and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.fx and 11 or 6)
+		toggle_y += 8
+		print_shadow("8:UI      "..(debug_toggles.ui and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.ui and 11 or 6)
+		toggle_y += 8
+		print_shadow("9:BBox    "..(debug_toggles.bbox and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.bbox and 11 or 6)
+	end
+
+	-- Draw profiler display on left side (below controls) - ALWAYS SHOW (not affected by UI toggle)
+	if show_debug and debug_toggles.debug_stats then
+		profile.draw()
+	end
+
 	-- Health bar
-	Profiler.start("ui:draw")
+	if debug_toggles.ui then
 	local health_bar_x = 2
 	local health_bar_y = 250
 	local health_bar_width = 100
@@ -2785,7 +2862,7 @@ function _draw()
 	end
 
 	-- Draw physics wireframes (if enabled) using Collision module
-	if DEBUG_SHOW_PHYSICS_WIREFRAME then
+	if debug_toggles.bbox then
 		-- Draw ship collision box (cyan) to test AABB
 		local ship_width, ship_height, ship_depth = get_ship_collision_dimensions(Mission.cargo_objects)
 		Collision.draw_wireframe(
@@ -2951,60 +3028,14 @@ function _draw()
 		-- Draw text
 		print(hint_text, hint_box_x + 3, hint_box_y + 3, 7)
 	end
-	
-	-- Performance info (right side, below minimap)
-	if show_debug and debug_toggles.fps_info then
-		local cpu = stat(1) * 100
-		local debug_x = 320  -- Right side of screen
-		local debug_y = 80   -- Below minimap (minimap is at y=10, size=64, so 10+64+6=80)
 
-		print_shadow("FPS: "..current_fps, debug_x, debug_y, 11)
-		print_shadow("CPU: "..flr(cpu).."%", debug_x, debug_y + 8, 11)
-		print_shadow("Tris: "..#all_faces, debug_x, debug_y + 16, 11)
-		print_shadow("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled, debug_x, debug_y + 24, 11)
-		print_shadow("  culled: "..objects_culled, debug_x, debug_y + 32, 10)
-		print_shadow("Terrain: "..terrain_tiles_rendered.."/"..terrain_tiles_rendered+terrain_tiles_culled, debug_x, debug_y + 40, 11)
-		print_shadow("  culled: "..terrain_tiles_culled, debug_x, debug_y + 48, 10)
-		print_shadow("VTOL: x="..flr(vtol.x*10)/10, debug_x, debug_y + 56, 10)
-		print_shadow("      y="..flr(vtol.y*10)/10, debug_x, debug_y + 64, 10)
-		print_shadow("      z="..flr(vtol.z*10)/10, debug_x, debug_y + 72, 10)
-
-		local vel_total = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
-		print_shadow("VEL: "..flr(vel_total*1000)/1000, debug_x, debug_y + 80, 10)
-		print_shadow("  vx="..flr(vtol.vx*1000)/1000, debug_x, debug_y + 88, 6)
-		print_shadow("  vy="..flr(vtol.vy*1000)/1000, debug_x, debug_y + 96, 6)
-		print_shadow("  vz="..flr(vtol.vz*1000)/1000, debug_x, debug_y + 104, 6)
-
-		-- Debug toggle menu
-		local toggle_y = debug_y + 120
-		print_shadow("DEBUG TOGGLES:", debug_x, toggle_y, 11)
-		toggle_y += 10
-		print_shadow("1:Ship    "..(debug_toggles.player_ship and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.player_ship and 11 or 6)
-		toggle_y += 8
-		print_shadow("2:Skybox  "..(debug_toggles.skybox and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.skybox and 11 or 6)
-		toggle_y += 8
-		print_shadow("3:Fog     "..(debug_toggles.fog and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.fog and 11 or 6)
-		toggle_y += 8
-		print_shadow("4:FPS     "..(debug_toggles.fps_info and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.fps_info and 11 or 6)
-		toggle_y += 8
-		print_shadow("5:Bldgs   "..(debug_toggles.buildings and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.buildings and 11 or 6)
-		toggle_y += 8
-		print_shadow("6:Terrain "..(debug_toggles.terrain and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.terrain and 11 or 6)
-	end
-
-	-- Draw profiler display on left side (below controls)
-	if show_debug and debug_toggles.fps_info then
-		local profiler_x = 2
-		local profiler_y = 120  -- Below controls section
-		Profiler.draw(profiler_x, profiler_y, 10)
-	end
-
+	end -- End of UI toggle
 
 	Mission.draw_pause_menu()
 
 	-- Draw rain as lines (if weather enabled)
-	if Weather.enabled then
+	if Weather.enabled and debug_toggles.fx then
 		Weather.draw_rain_lines(camera, vtol)
 	end
-	Profiler.stop("ui:draw")
+	profile("ui:draw")
 end

@@ -462,19 +462,39 @@ function Renderer.draw_faces(all_faces, ship_flash_red)
 	fillp()  -- Reset fill pattern after drawing
 end
 
--- Sort faces using insertion sort (efficient for mostly sorted data)
+-- Quicksort partition function
+local function partition(faces, low, high)
+	local pivot = faces[high].depth
+	local i = low - 1
+
+	for j = low, high - 1 do
+		-- Sort in descending order (back to front - painter's algorithm)
+		if faces[j].depth >= pivot then
+			i = i + 1
+			-- Swap faces[i] and faces[j]
+			faces[i], faces[j] = faces[j], faces[i]
+		end
+	end
+
+	-- Swap faces[i+1] and faces[high] (pivot)
+	faces[i + 1], faces[high] = faces[high], faces[i + 1]
+	return i + 1
+end
+
+-- Quicksort recursive function
+local function quicksort(faces, low, high)
+	if low < high then
+		local pi = partition(faces, low, high)
+		quicksort(faces, low, pi - 1)
+		quicksort(faces, pi + 1, high)
+	end
+end
+
+-- Sort faces using quicksort (efficient for large datasets)
 -- @param faces: array of faces to sort by depth
 function Renderer.sort_faces(faces)
-	-- Sort all faces by depth (back to front - painter's algorithm)
-	for i = 2, #faces do
-		local key = faces[i]
-		local j = i - 1
-		-- Move elements that are closer than key to one position ahead
-		while j >= 1 and faces[j].depth < key.depth do
-			faces[j + 1] = faces[j]
-			j = j - 1
-		end
-		faces[j + 1] = key
+	if #faces > 1 then
+		quicksort(faces, 1, #faces)
 	end
 end
 
