@@ -7,10 +7,20 @@ local mission_testing = false  -- If true, all missions are unlocked
 local game_mode = "arcade"  -- "arcade" or "simulation"
 
 -- UI toggles
-local show_debug = false
+local show_debug = true
 local show_mission_ui = true
 local show_ship_collision_box = false  -- Toggle ship collision wireframe
 local show_cargo_debug = false  -- Toggle cargo debug info (temporary for Mission 3 debug)
+
+-- Debug menu toggles (toggle with number keys 1-6)
+local debug_toggles = {
+	player_ship = true,    -- 1: Toggle player ship rendering
+	skybox = true,         -- 2: Toggle skybox rendering
+	fog = true,            -- 3: Toggle fog effect
+	fps_info = true,       -- 4: Toggle FPS/performance info
+	buildings = true,      -- 5: Toggle building rendering
+	terrain = true         -- 6: Toggle terrain rendering
+}
 
 -- Ship collision box dimensions
 local SHIP_COLLISION_WIDTH = 1.5   -- Default width
@@ -891,6 +901,13 @@ local function render_mesh(verts, faces, offset_x, offset_y, offset_z, sprite_ov
 	)
 end
 
+-- Helper function for printing text with drop shadow
+local function print_shadow(text, x, y, color, shadow_color)
+	shadow_color = shadow_color or 0  -- Default shadow color is black
+	print(text, x + 1, y + 1, shadow_color)  -- Shadow
+	print(text, x, y, color)  -- Main text
+end
+
 -- Initialize menu at startup
 Menu.mission_testing = mission_testing
 Menu.init(level_music_addr)
@@ -948,6 +965,37 @@ function _update()
 		show_controls = not show_controls
 	end
 	last_c_state = key("c")
+
+	-- Debug menu toggles (number keys 1-6)
+	if key("1") and not (last_1_state) then
+		debug_toggles.player_ship = not debug_toggles.player_ship
+	end
+	last_1_state = key("1")
+
+	if key("2") and not (last_2_state) then
+		debug_toggles.skybox = not debug_toggles.skybox
+	end
+	last_2_state = key("2")
+
+	if key("3") and not (last_3_state) then
+		debug_toggles.fog = not debug_toggles.fog
+	end
+	last_3_state = key("3")
+
+	if key("4") and not (last_4_state) then
+		debug_toggles.fps_info = not debug_toggles.fps_info
+	end
+	last_4_state = key("4")
+
+	if key("5") and not (last_5_state) then
+		debug_toggles.buildings = not debug_toggles.buildings
+	end
+	last_5_state = key("5")
+
+	if key("6") and not (last_6_state) then
+		debug_toggles.terrain = not debug_toggles.terrain
+	end
+	last_6_state = key("6")
 
 	-- Handle pause menu actions
 	if Mission.show_pause_menu then
@@ -1853,75 +1901,81 @@ function _draw()
 	local all_faces = {}
 
 	-- Render skybox (always at camera position, draws behind everything)
-	local skybox_sorted
-	if Mission.current_mission_num == 6 then
-		-- Mission 6: use special dome skybox with sprite 29 (64x32)
-		-- is_ground=true, is_skybox=true for special pitch-independent culling
-		skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true, nil, nil, nil, nil, nil, true)
-	else
-		-- Other missions: use regular skybox
-		local skybox_sprite = nil
-		if Weather.enabled then
-			-- Mission 5: use cloudy sky (sprite 23)
-			skybox_sprite = 23
+	if debug_toggles.skybox then
+		local skybox_sorted
+		if Mission.current_mission_num == 6 then
+			-- Mission 6: use special dome skybox with sprite 29 (64x32)
+			-- is_ground=true, is_skybox=true for special pitch-independent culling
+			skybox_sorted = render_mesh(m6_skybox_verts, m6_skybox_faces, camera.x, camera.y, camera.z, nil, true, nil, nil, nil, nil, nil, true)
+		else
+			-- Other missions: use regular skybox
+			local skybox_sprite = nil
+			if Weather.enabled then
+				-- Mission 5: use cloudy sky (sprite 23)
+				skybox_sprite = 23
+			end
+			skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true, nil, nil, nil, nil, nil, true)
 		end
-		skybox_sorted = render_mesh(skybox_verts, skybox_faces, camera.x, camera.y, camera.z, skybox_sprite, true, nil, nil, nil, nil, nil, true)
-	end
 
-	for _, f in ipairs(skybox_sorted) do
-		f.depth = 999999  -- Push skybox to back (always draws behind)
-		f.is_skybox = true  -- Mark as skybox to exclude from fog
-		add(all_faces, f)
+		for _, f in ipairs(skybox_sorted) do
+			f.depth = 999999  -- Push skybox to back (always draws behind)
+			f.is_skybox = true  -- Mark as skybox to exclude from fog
+			add(all_faces, f)
+		end
 	end
 
 	-- Generate terrain tiles with bounding boxes for culling
-	local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
-
-	-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
-	local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
-	local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
-
-	-- Render terrain tiles with distance culling
 	local terrain_tiles_rendered = 0
 	local terrain_tiles_culled = 0
-	for _, tile in ipairs(terrain_tiles) do
-		-- Distance cull terrain tiles based on center point and height
-		-- Taller tiles are visible from farther away
-		if not Renderer.tile_distance_cull(tile.center_x, tile.center_z, tile.height, camera, effective_render_distance) then
-			-- Update water sprite on water faces
-			for _, face in ipairs(tile.faces) do
-				if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
-					face[4] = water_sprite
-				end
-			end
+	if debug_toggles.terrain then
+		local terrain_tiles = Heightmap.generate_terrain_tiles(camera.x, camera.z, nil, effective_render_distance)
 
-			-- Render tile (each tile has its own verts/faces)
-			local tile_sorted = render_mesh(tile.verts, tile.faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
-			for _, f in ipairs(tile_sorted) do
-				add(all_faces, f)
+		-- Animate water: swap between SPRITE_WATER and SPRITE_WATER2 every 0.5 seconds
+		local water_frame = flr(time() * 2) % 2  -- 0 or 1, changes every 0.5 seconds
+		local water_sprite = water_frame == 0 and SPRITE_WATER or SPRITE_WATER2
+
+		-- Render terrain tiles with distance culling
+		for _, tile in ipairs(terrain_tiles) do
+			-- Distance cull terrain tiles based on center point and height
+			-- Taller tiles are visible from farther away
+			if not Renderer.tile_distance_cull(tile.center_x, tile.center_z, tile.height, camera, effective_render_distance) then
+				-- Update water sprite on water faces
+				for _, face in ipairs(tile.faces) do
+					if face[4] == SPRITE_WATER or face[4] == SPRITE_WATER2 then
+						face[4] = water_sprite
+					end
+				end
+
+				-- Render tile (each tile has its own verts/faces)
+				local tile_sorted = render_mesh(tile.verts, tile.faces, 0, 0, 0, nil, true, nil, nil, nil, effective_render_distance, effective_fog_start)
+				for _, f in ipairs(tile_sorted) do
+					add(all_faces, f)
+				end
+				terrain_tiles_rendered += 1
+			else
+				terrain_tiles_culled += 1
 			end
-			terrain_tiles_rendered += 1
-		else
-			terrain_tiles_culled += 1
 		end
 	end
 
 	-- Render all buildings
-	for _, building in ipairs(buildings) do
-		local building_faces = render_mesh(
-			building.verts,
-			building.faces,
-			building.x,
-			building.y,
-			building.z,
-			building.sprite_override,
-			false,
-			nil, nil, nil,
-			effective_render_distance,
-			effective_fog_start
-		)
-		for _, f in ipairs(building_faces) do
-			add(all_faces, f)
+	if debug_toggles.buildings then
+		for _, building in ipairs(buildings) do
+			local building_faces = render_mesh(
+				building.verts,
+				building.faces,
+				building.x,
+				building.y,
+				building.z,
+				building.sprite_override,
+				false,
+				nil, nil, nil,
+				effective_render_distance,
+				effective_fog_start
+			)
+			for _, f in ipairs(building_faces) do
+				add(all_faces, f)
+			end
 		end
 	end
 
@@ -2063,34 +2117,36 @@ function _draw()
 	-- Uncomment to enable turret debug visualization
 
 	-- Calculate if ship should flash (critically damaged)
-	local health_percent = vtol.health / vtol.max_health
-	local use_damage_sprite = false
-	if health_percent < 0.2 then  -- Below 20%
-		use_damage_sprite = (time() * 2) % 1 > 0.5  -- Flash on/off (slower)
-	end
+	if debug_toggles.player_ship then
+		local health_percent = vtol.health / vtol.max_health
+		local use_damage_sprite = false
+		if health_percent < 0.2 then  -- Below 20%
+			use_damage_sprite = (time() * 2) % 1 > 0.5  -- Flash on/off (slower)
+		end
 
-	-- Get filtered faces from Ship module
-	local vtol_faces_filtered = vtol:get_render_faces(use_damage_sprite)
+		-- Get filtered faces from Ship module
+		local vtol_faces_filtered = vtol:get_render_faces(use_damage_sprite)
 
-	local vtol_sorted = render_mesh(
-		vtol.verts,
-		vtol_faces_filtered,
-		vtol.x,
-		vtol.y,
-		vtol.z,
-		nil,  -- no sprite override
-		false,  -- not ground
-		vtol.pitch,
-		vtol.yaw,
-		vtol.roll,
-		effective_render_distance,
-		effective_fog_start,
-		false,  -- is_skybox
-		true    -- no_cull - ship should never be culled
-	)
-	for _, f in ipairs(vtol_sorted) do
-		f.is_vtol = true  -- Mark VTOL faces
-		add(all_faces, f)
+		local vtol_sorted = render_mesh(
+			vtol.verts,
+			vtol_faces_filtered,
+			vtol.x,
+			vtol.y,
+			vtol.z,
+			nil,  -- no sprite override
+			false,  -- not ground
+			vtol.pitch,
+			vtol.yaw,
+			vtol.roll,
+			effective_render_distance,
+			effective_fog_start,
+			false,  -- is_skybox
+			true    -- no_cull - ship should never be culled
+		)
+		for _, f in ipairs(vtol_sorted) do
+			f.is_vtol = true  -- Mark VTOL faces
+			add(all_faces, f)
+		end
 	end
 
 	-- Draw ship collision box wireframe (if enabled)
@@ -2868,27 +2924,43 @@ function _draw()
 	end
 	
 	-- Performance info (right side, below minimap)
-	if show_debug then
+	if show_debug and debug_toggles.fps_info then
 		local cpu = stat(1) * 100
 		local debug_x = 320  -- Right side of screen
 		local debug_y = 80   -- Below minimap (minimap is at y=10, size=64, so 10+64+6=80)
 
-		print("FPS: "..current_fps, debug_x, debug_y, 11)
-		print("CPU: "..flr(cpu).."%", debug_x, debug_y + 8, 11)
-		print("Tris: "..#all_faces, debug_x, debug_y + 16, 11)
-		print("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled, debug_x, debug_y + 24, 11)
-		print("  culled: "..objects_culled, debug_x, debug_y + 32, 10)
-		print("Terrain: "..terrain_tiles_rendered.."/"..terrain_tiles_rendered+terrain_tiles_culled, debug_x, debug_y + 40, 11)
-		print("  culled: "..terrain_tiles_culled, debug_x, debug_y + 48, 10)
-		print("VTOL: x="..flr(vtol.x*10)/10, debug_x, debug_y + 56, 10)
-		print("      y="..flr(vtol.y*10)/10, debug_x, debug_y + 64, 10)
-		print("      z="..flr(vtol.z*10)/10, debug_x, debug_y + 72, 10)
+		print_shadow("FPS: "..current_fps, debug_x, debug_y, 11)
+		print_shadow("CPU: "..flr(cpu).."%", debug_x, debug_y + 8, 11)
+		print_shadow("Tris: "..#all_faces, debug_x, debug_y + 16, 11)
+		print_shadow("Objects: "..objects_rendered.."/"..objects_rendered+objects_culled, debug_x, debug_y + 24, 11)
+		print_shadow("  culled: "..objects_culled, debug_x, debug_y + 32, 10)
+		print_shadow("Terrain: "..terrain_tiles_rendered.."/"..terrain_tiles_rendered+terrain_tiles_culled, debug_x, debug_y + 40, 11)
+		print_shadow("  culled: "..terrain_tiles_culled, debug_x, debug_y + 48, 10)
+		print_shadow("VTOL: x="..flr(vtol.x*10)/10, debug_x, debug_y + 56, 10)
+		print_shadow("      y="..flr(vtol.y*10)/10, debug_x, debug_y + 64, 10)
+		print_shadow("      z="..flr(vtol.z*10)/10, debug_x, debug_y + 72, 10)
 
 		local vel_total = sqrt(vtol.vx*vtol.vx + vtol.vy*vtol.vy + vtol.vz*vtol.vz)
-		print("VEL: "..flr(vel_total*1000)/1000, debug_x, debug_y + 80, 10)
-		print("  vx="..flr(vtol.vx*1000)/1000, debug_x, debug_y + 88, 6)
-		print("  vy="..flr(vtol.vy*1000)/1000, debug_x, debug_y + 96, 6)
-		print("  vz="..flr(vtol.vz*1000)/1000, debug_x, debug_y + 104, 6)
+		print_shadow("VEL: "..flr(vel_total*1000)/1000, debug_x, debug_y + 80, 10)
+		print_shadow("  vx="..flr(vtol.vx*1000)/1000, debug_x, debug_y + 88, 6)
+		print_shadow("  vy="..flr(vtol.vy*1000)/1000, debug_x, debug_y + 96, 6)
+		print_shadow("  vz="..flr(vtol.vz*1000)/1000, debug_x, debug_y + 104, 6)
+
+		-- Debug toggle menu
+		local toggle_y = debug_y + 120
+		print_shadow("DEBUG TOGGLES:", debug_x, toggle_y, 11)
+		toggle_y += 10
+		print_shadow("1:Ship    "..(debug_toggles.player_ship and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.player_ship and 11 or 6)
+		toggle_y += 8
+		print_shadow("2:Skybox  "..(debug_toggles.skybox and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.skybox and 11 or 6)
+		toggle_y += 8
+		print_shadow("3:Fog     "..(debug_toggles.fog and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.fog and 11 or 6)
+		toggle_y += 8
+		print_shadow("4:FPS     "..(debug_toggles.fps_info and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.fps_info and 11 or 6)
+		toggle_y += 8
+		print_shadow("5:Bldgs   "..(debug_toggles.buildings and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.buildings and 11 or 6)
+		toggle_y += 8
+		print_shadow("6:Terrain "..(debug_toggles.terrain and "ON" or "OFF"), debug_x, toggle_y, debug_toggles.terrain and 11 or 6)
 	end
 
 

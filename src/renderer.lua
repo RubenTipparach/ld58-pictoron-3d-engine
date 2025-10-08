@@ -433,7 +433,9 @@ function Renderer.draw_faces(all_faces, ship_flash_red)
 		-- Apply linear fog dithering based on distance (applies to all sprites except skybox)
 		-- fog_level: 0 = no fog (opaque), 1 = full fog (transparent)
 		local fog_level = f.fog or 0
-		if fog_level > 0 and not f.is_skybox then
+		-- Get fog toggle state from global debug_toggles (if it exists)
+		local fog_enabled = not _ENV.debug_toggles or _ENV.debug_toggles.fog ~= false
+		if fog_level > 0 and not f.is_skybox and fog_enabled then
 			-- Higher fog_level = less visible (patterns FLIPPED - more 1s = MORE transparent!)
 			if fog_level > 0.875 then
 				fillp(0b0111111101111111)  -- Most 1s = most transparent (almost invisible)
