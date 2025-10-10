@@ -3,6 +3,9 @@
 
 local Renderer = {}
 
+-- Profiler reference (set externally if profiling is enabled)
+Renderer.profiler = nil
+
 -- ============================================
 -- RENDER CONFIGURATION
 -- ============================================
@@ -116,16 +119,15 @@ end
 -- @param fog_start_distance: distance at which fog starts (optional)
 -- @param is_skybox: skip pitch-based culling for skybox (optional)
 -- @param fog_enabled: whether fog is enabled (optional, default true)
--- @return sorted_faces: array of faces ready to draw
+-- @return projected_faces: array of faces ready to draw (unsorted)
 function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z, sprite_override, is_ground, rot_pitch, rot_yaw, rot_roll, render_distance, ground_always_behind, fog_start_distance, is_skybox, fog_enabled)
-	-- Projection parameters
-	local fov = 70  -- Field of view
-	local near = 0.01  -- Near clipping plane
-	local far = render_distance or 20  -- Far clipping plane
-	local fov_rad = fov * 0.5 * 0.0174533
-	local tan_half_fov = sin(fov_rad) / cos(fov_rad)
+	local prof = Renderer.profiler
 
-	-- Camera distance
+	if prof then prof("    setup") end
+	-- Projection parameters (hardcoded constants for speed)
+	local near = 0.01
+	local far = render_distance or 20
+	local tan_half_fov = 0.7002075  -- precalculated: tan(70/2 degrees)
 	local cam_dist = 5
 
 	-- Early culling: check if object is within render distance (horizontal only)
@@ -138,13 +140,13 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 
 	-- Cull objects beyond render range (unless it's ground)
 	if not is_ground and dist_sq > far * far then
+		if prof then prof("    setup") end
 		return {}
 	end
 
-	-- Cache camera-space transformations and project vertices
+	-- Allocate arrays for vertex processing
 	local projected = {}
 	local depths = {}
-	local camera_verts = {}  -- Cache transformed vertices in camera space
 
 	-- Precompute rotation values
 	local cos_ry, sin_ry = cos(camera.ry), sin(camera.ry)
@@ -157,8 +159,19 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 		cos_yaw, sin_yaw = cos(rot_yaw or 0), sin(rot_yaw or 0)
 		cos_roll, sin_roll = cos(rot_roll or 0), sin(rot_roll or 0)
 	end
+	if prof then prof("    setup") end
 
-	for i, v in ipairs(verts) do
+	if prof then prof("    project") end
+
+	-- Precompute projection scale
+	local proj_scale = 270 / tan_half_fov
+	local cam_x, cam_y, cam_z = camera.x, camera.y, camera.z
+	local offset_x_val = offset_x or 0
+	local offset_y_val = offset_y or 0
+	local offset_z_val = offset_z or 0
+
+	for i = 1, #verts do
+		local v = verts[i]
 		local x, y, z = v.x, v.y, v.z
 
 		-- Apply object rotation (pitch, yaw, roll) if provided
@@ -178,15 +191,10 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 			x, y, z = x_roll, y_roll, z_pitch
 		end
 
-		-- Apply offset for positioning
-		x = x + (offset_x or 0)
-		y = y + (offset_y or 0)
-		z = z + (offset_z or 0)
-
-		-- Apply camera pan
-		x = x - camera.x
-		y = y - camera.y
-		z = z - camera.z
+		-- Apply offset and camera transform in one step
+		x = x + offset_x_val - cam_x
+		y = y + offset_y_val - cam_y
+		z = z + offset_z_val - cam_z
 
 		-- Rotate around Y axis (using cached values)
 		local x2 = x * cos_ry - z * sin_ry
@@ -194,236 +202,214 @@ function Renderer.render_mesh(verts, faces, camera, offset_x, offset_y, offset_z
 
 		-- Rotate around X axis (using cached values)
 		local y2 = y * cos_rx - z2 * sin_rx
-		local z3 = y * sin_rx + z2 * cos_rx
-
-		-- Move away from camera
-		z3 += cam_dist
-
-		-- Store camera-space vertex for later use (backface culling)
-		camera_verts[i] = vec(x2, y2, z3)
+		local z3 = y * sin_rx + z2 * cos_rx + cam_dist
 
 		-- Perspective projection (allow vertices closer to camera)
 		if z3 > near then
-			local w = z3
-			local px = x2 / z3 * (270 / tan_half_fov)
-			local py = y2 / z3 * (270 / tan_half_fov)
-
-			-- Screen space
-			px = px + 240
-			py = py + 135
+			local inv_z = 1 / z3
+			local px = -x2 * inv_z * proj_scale + 240
+			local py = -y2 * inv_z * proj_scale + 135
 
 			-- Store projected vertex and its depth
-			projected[i] = {x=px, y=py, z=0, w=1/w}
+			projected[i] = {x=px, y=py, z=0, w=inv_z}
 			depths[i] = z3
 		else
 			projected[i] = nil
 			depths[i] = nil
 		end
 	end
+	if prof then prof("    project") end
 
-	-- Build list of faces with depth for sorting
-	local sorted_faces = {}
-	for i, face in ipairs(faces) do
+	-- Build list of projected faces with depth (not sorted yet)
+	if prof then prof("    backface") end
+	local projected_faces = {}
+	local sprite_id = sprite_override  -- Cache sprite override
+	local skip_culling = is_ground or is_skybox
+	local depth_bias = is_ground and (ground_always_behind == nil or ground_always_behind) and 1000 or 0
+
+	for i = 1, #faces do
+		local face = faces[i]
 		local v1_idx, v2_idx, v3_idx = face[1], face[2], face[3]
 		local p1, p2, p3 = projected[v1_idx], projected[v2_idx], projected[v3_idx]
-		local d1, d2, d3 = depths[v1_idx], depths[v2_idx], depths[v3_idx]
 
-		if p1 and p2 and p3 and d1 and d2 and d3 then
-			-- Use cached camera-space vertices
-			local cv1 = camera_verts[v1_idx]
-			local cv2 = camera_verts[v2_idx]
-			local cv3 = camera_verts[v3_idx]
+		if p1 and p2 and p3 then
+			local d1, d2, d3 = depths[v1_idx], depths[v2_idx], depths[v3_idx]
 
-			-- Calculate face normal in camera space
-			local edge1 = vec(cv2.x - cv1.x, cv2.y - cv1.y, cv2.z - cv1.z)
-			local edge2 = vec(cv3.x - cv1.x, cv3.y - cv1.y, cv3.z - cv1.z)
+			-- Fast screen-space backface culling (2D cross product)
+			local cross = (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
 
-			-- Cross product to get normal
-			local nx = edge1.y * edge2.z - edge1.z * edge2.y
-			local ny = edge1.z * edge2.x - edge1.x * edge2.z
-			local nz = edge1.x * edge2.y - edge1.y * edge2.x
+			-- Only include if facing towards camera (clockwise winding in screen space)
+			if cross > 0 or skip_culling then
+				-- Calculate average depth for sorting
+				local avg_depth = (d1 + d2 + d3) * 0.333333 + depth_bias
 
-			-- View vector is just the average position (since camera is at origin in camera space)
-			local view_x = (cv1.x + cv2.x + cv3.x) / 3
-			local view_y = (cv1.y + cv2.y + cv3.y) / 3
-			local view_z = (cv1.z + cv2.z + cv3.z) / 3
-
-			-- Dot product of normal and view vector
-			local dot = nx * view_x + ny * view_y + nz * view_z
-
-			-- For skybox, only cull based on horizontal (XZ) components, ignore pitch (Y)
-			local skybox_dot = dot
-			if is_skybox then
-				skybox_dot = nx * view_x + nz * view_z  -- Exclude Y component
-			end
-
-			-- Only render if facing camera (dot product > 0 means facing camera)
-			-- Skip backface culling for ground/skybox (is_ground flag)
-			-- For skybox, use horizontal-only dot product to avoid pitch-based culling
-			if (is_skybox and skybox_dot > -0.5) or dot > 0 or is_ground then
-				-- Screen space backface culling as backup
-				local edge1_x, edge1_y = p2.x - p1.x, p2.y - p1.y
-				local edge2_x, edge2_y = p3.x - p1.x, p3.y - p1.y
-				local cross = edge1_x * edge2_y - edge1_y * edge2_x
-
-				-- Only include if facing towards camera (clockwise winding in screen space)
-				if cross > 0 then
-					-- Calculate average depth for sorting
-					local avg_depth = (d1 + d2 + d3) / 3
-					-- Add depth bias for ground to ensure it renders behind everything (if enabled)
-					if is_ground and (ground_always_behind == nil or ground_always_behind) then
-						avg_depth += 1000  -- Push ground far back in sort order
+				-- Calculate fog opacity based on distance (0 = opaque, 1 = fully fogged)
+				local fog_opacity = 0
+				if (fog_enabled == nil or fog_enabled) and fog_start_distance then
+					-- For terrain/ground, use per-vertex depth instead of mesh distance
+					local face_dist = is_ground and avg_depth or obj_dist
+					if face_dist > fog_start_distance then
+						local linear_fog = (face_dist - fog_start_distance) / (far - fog_start_distance)
+						fog_opacity = linear_fog * linear_fog  -- Exponential (square for smoother falloff)
+						fog_opacity = mid(0, fog_opacity, 1)  -- Clamp 0-1
 					end
-
-					-- Calculate fog opacity based on distance (0 = opaque, 1 = fully fogged)
-					-- Using exponential falloff for smoother fade
-					local fog_opacity = 0
-					-- Only calculate fog if fog is enabled (default true if not specified)
-					if (fog_enabled == nil or fog_enabled) and fog_start_distance then
-						-- For terrain/ground, use per-vertex depth instead of mesh distance
-						local face_dist = is_ground and avg_depth or obj_dist
-						if face_dist > fog_start_distance then
-							local linear_fog = (face_dist - fog_start_distance) / (far - fog_start_distance)
-							fog_opacity = linear_fog * linear_fog  -- Exponential (square for smoother falloff)
-							fog_opacity = mid(0, fog_opacity, 1)  -- Clamp 0-1
-						end
-					end
-
-					-- Create a copy of face with sprite override if provided
-					local face_copy = {face[1], face[2], face[3], sprite_override or face[4], face[5], face[6], face[7]}
-					add(sorted_faces, {face=face_copy, depth=avg_depth, p1=p1, p2=p2, p3=p3, fog=fog_opacity})
 				end
+
+				-- Create face entry (reuse sprite_override, no table copy needed)
+				add(projected_faces, {
+					face = {face[1], face[2], face[3], sprite_id or face[4], face[5], face[6], face[7]},
+					depth = avg_depth,
+					p1 = p1,
+					p2 = p2,
+					p3 = p3,
+					fog = fog_opacity
+				})
 			end
 		end
 	end
+	if prof then prof("    backface") end
 
-	return sorted_faces
+	return projected_faces
 end
 
 -- Draw a list of sorted faces using the pooled vertex data
 -- @param all_faces: sorted array of faces
 -- @param ship_flash_red: whether to flash ship sprite red (optional)
 function Renderer.draw_faces(all_faces, ship_flash_red)
-	-- Draw all faces in sorted order (reuse pooled userdata)
-	profile("draw:setup")
-	local setup_count = 0
-	local textri_count = 0
-	profile("draw:setup")
+	-- Draw all faces - optimized for batch rendering
+	local vpool = vert_data_pool
+	local n = #all_faces
 
-	for _, f in ipairs(all_faces) do
-		profile("draw:setup")
+	-- Pre-allocate sprite props table (reuse across all triangles)
+	local props = {tex = 0}
+
+	for i = 1, n do
+		local f = all_faces[i]
 		local face = f.face
 		local sprite_id = face[4]
-		local uv1 = face[5] or vec(0,0)
-		local uv2 = face[6] or vec(16,0)
-		local uv3 = face[7] or vec(16,16)
+		local p1, p2, p3 = f.p1, f.p2, f.p3
 
-		-- Apply red flash to ship sprite (sprite 0) when critically damaged
-		local render_sprite = sprite_id
-		if sprite_id == 0 and ship_flash_red then
-			render_sprite = 8  -- Red sprite for flash effect
-		end
+		-- Get UVs - most faces have UVs, optimize for common case
+		local uv1, uv2, uv3 = face[5], face[6], face[7]
 
-		-- Reuse pooled vert_data (no allocation!)
-		-- Vertex 1
-		vert_data_pool[0], vert_data_pool[1], vert_data_pool[2], vert_data_pool[3], vert_data_pool[4], vert_data_pool[5] =
-			f.p1.x, f.p1.y, 0, f.p1.w, uv1.x, uv1.y
-		-- Vertex 2
-		vert_data_pool[6], vert_data_pool[7], vert_data_pool[8], vert_data_pool[9], vert_data_pool[10], vert_data_pool[11] =
-			f.p2.x, f.p2.y, 0, f.p2.w, uv2.x, uv2.y
-		-- Vertex 3
-		vert_data_pool[12], vert_data_pool[13], vert_data_pool[14], vert_data_pool[15], vert_data_pool[16], vert_data_pool[17] =
-			f.p3.x, f.p3.y, 0, f.p3.w, uv3.x, uv3.y
-
-		-- Apply dithering for flame sprites (sprite 3) and smoke sprites (sprite 5)
-		if sprite_id == 3 then
-			fillp(0b0101101001011010)  -- 50% dither pattern for flames
-		elseif sprite_id == 5 then
-			-- Smoke sprite with graduated opacity
-			local opacity = f.opacity or 1.0
-
-			-- Use different dither patterns for different opacity levels
-			if opacity < 0.25 then
-				fillp(0b1000000010000000)  -- ~12.5% opacity (very sparse)
-			elseif opacity < 0.5 then
-				fillp(0b1000010010000100)  -- ~25% opacity
-			elseif opacity < 0.75 then
-				fillp(0b0101101001011010)  -- 50% opacity
-			else
-				fillp(0b0111111101111111)  -- ~87.5% opacity (mostly solid)
-			end
+		if uv1 then
+			-- Fast path: UVs exist (common case)
+			vpool[0], vpool[1], vpool[3], vpool[4], vpool[5] = p1.x, p1.y, p1.w, uv1.x, uv1.y
+			vpool[6], vpool[7], vpool[9], vpool[10], vpool[11] = p2.x, p2.y, p2.w, uv2.x, uv2.y
+			vpool[12], vpool[13], vpool[15], vpool[16], vpool[17] = p3.x, p3.y, p3.w, uv3.x, uv3.y
 		else
-			fillp()  -- Reset to solid
+			-- Slow path: default UVs (rare)
+			vpool[0], vpool[1], vpool[3], vpool[4], vpool[5] = p1.x, p1.y, p1.w, 0, 0
+			vpool[6], vpool[7], vpool[9], vpool[10], vpool[11] = p2.x, p2.y, p2.w, 16, 0
+			vpool[12], vpool[13], vpool[15], vpool[16], vpool[17] = p3.x, p3.y, p3.w, 16, 16
 		end
 
-		-- Apply linear fog dithering based on distance (applies to all sprites except skybox)
-		-- fog_level: 0 = no fog (opaque), 1 = full fog (transparent)
-		local fog_level = f.fog or 0
-		if fog_level > 0 and not f.is_skybox then
-			-- Higher fog_level = less visible (patterns FLIPPED - more 1s = MORE transparent!)
-			if fog_level > 0.875 then
-				fillp(0b0111111101111111)  -- Most 1s = most transparent (almost invisible)
-			elseif fog_level > 0.75 then
-				fillp(0b0111101101111011)  --
-			elseif fog_level > 0.625 then
-				fillp(0b0101101101011011)  --
-			elseif fog_level > 0.5 then
-				fillp(0b0101101001011010)  -- 50%
-			elseif fog_level > 0.375 then
-				fillp(0b1010010010100100)  --
-			elseif fog_level > 0.25 then
-				fillp(0b1000010010000100)  --
-			elseif fog_level > 0.125 then
-				fillp(0b1000010000100001)  --
+		-- Z is always 0 for screen-space vertices
+		vpool[2], vpool[8], vpool[14] = 0, 0, 0
+
+		-- Update sprite in reused props table
+		props.tex = (sprite_id == 0 and ship_flash_red) and 8 or sprite_id
+
+		-- Special sprite effects (flames/smoke only)
+		if sprite_id == 3 then
+			fillp(0b0101101001011010)
+			Renderer.textri(props, vpool, 270)
+			fillp()
+		elseif sprite_id == 5 then
+			local opacity = f.opacity or 1.0
+			fillp(opacity < 0.25 and 0b1000000010000000 or
+			      opacity < 0.5 and 0b1000010010000100 or
+			      opacity < 0.75 and 0b0101101001011010 or 0b0111111101111111)
+			Renderer.textri(props, vpool, 270)
+			fillp()
+		else
+			-- Apply fog dithering if present (but not for skybox)
+			local fog_level = f.fog or 0
+			if fog_level > 0 and not f.is_skybox then
+				-- Higher fog_level = less visible (more transparent)
+				if fog_level > 0.875 then
+					fillp(0b0111111101111111)
+				elseif fog_level > 0.75 then
+					fillp(0b0111101101111011)
+				elseif fog_level > 0.625 then
+					fillp(0b0101101101011011)
+				elseif fog_level > 0.5 then
+					fillp(0b0101101001011010)
+				elseif fog_level > 0.375 then
+					fillp(0b1010010010100100)
+				elseif fog_level > 0.25 then
+					fillp(0b1000010010000100)
+				elseif fog_level > 0.125 then
+					fillp(0b1000010000100001)
+				else
+					fillp(0b1000000010000000)
+				end
+				Renderer.textri(props, vpool, 270)
+				fillp()
 			else
-				fillp(0b1000000010000000)  -- Fewest 1s = least transparent (barely fogged)
+				-- Fast path: solid sprites (no fog or skybox)
+				Renderer.textri(props, vpool, 270)
 			end
 		end
-		setup_count += 1
-		profile("draw:setup")
-
-		profile("draw:textri")
-		Renderer.textri({tex = render_sprite}, vert_data_pool, 270)
-		textri_count += 1
-		profile("draw:textri")
 	end
-
-	fillp()  -- Reset fill pattern after drawing
 end
 
--- Quicksort partition function
-local function partition(faces, low, high)
-	local pivot = faces[high].depth
-	local i = low - 1
+-- Optimized insertion sort for small arrays (faster than quicksort for n < 20)
+local function insertion_sort(faces, low, high)
+	for i = low + 1, high do
+		local key = faces[i]
+		local key_depth = key.depth
+		local j = i - 1
 
-	for j = low, high - 1 do
-		-- Sort in descending order (back to front - painter's algorithm)
-		if faces[j].depth >= pivot then
-			i = i + 1
-			-- Swap faces[i] and faces[j]
-			faces[i], faces[j] = faces[j], faces[i]
+		-- Shift elements that are less than key (descending order)
+		while j >= low and faces[j].depth < key_depth do
+			faces[j + 1] = faces[j]
+			j = j - 1
+		end
+		faces[j + 1] = key
+	end
+end
+
+-- Hybrid quicksort with insertion sort for small partitions
+local function quicksort(faces, low, high)
+	while low < high do
+		-- Use insertion sort for small partitions (faster)
+		if high - low < 20 then
+			insertion_sort(faces, low, high)
+			return
+		end
+
+		-- Partition
+		local pivot = faces[high].depth
+		local i = low - 1
+
+		for j = low, high - 1 do
+			if faces[j].depth >= pivot then
+				i = i + 1
+				faces[i], faces[j] = faces[j], faces[i]
+			end
+		end
+
+		i = i + 1
+		faces[i], faces[high] = faces[high], faces[i]
+
+		-- Recursively sort smaller partition, iterate on larger (tail recursion optimization)
+		if i - low < high - i then
+			quicksort(faces, low, i - 1)
+			low = i + 1
+		else
+			quicksort(faces, i + 1, high)
+			high = i - 1
 		end
 	end
-
-	-- Swap faces[i+1] and faces[high] (pivot)
-	faces[i + 1], faces[high] = faces[high], faces[i + 1]
-	return i + 1
 end
 
--- Quicksort recursive function
-local function quicksort(faces, low, high)
-	if low < high then
-		local pi = partition(faces, low, high)
-		quicksort(faces, low, pi - 1)
-		quicksort(faces, pi + 1, high)
-	end
-end
-
--- Sort faces using quicksort (efficient for large datasets)
+-- Sort faces using hybrid quicksort/insertion sort
 -- @param faces: array of faces to sort by depth
 function Renderer.sort_faces(faces)
-	if #faces > 1 then
-		quicksort(faces, 1, #faces)
+	local n = #faces
+	if n > 1 then
+		quicksort(faces, 1, n)
 	end
 end
 
