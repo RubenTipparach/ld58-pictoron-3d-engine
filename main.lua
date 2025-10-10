@@ -213,9 +213,12 @@ local function generate_sphere(subdivisions)
 		vec(t, 0, -1), vec(t, 0, 1), vec(-t, 0, -1), vec(-t, 0, 1)
 	}
 
-	-- Normalize to unit sphere using MathUtils
+	-- Normalize to unit sphere
 	for i, v in ipairs(vertices) do
-		vertices[i] = MathUtils.normalize(v)
+		local len = v:magnitude()
+		if len > 0 then
+			vertices[i] = vec(v.x/len, v.y/len, v.z/len)
+		end
 	end
 
 	-- Icosahedron faces (reversed winding order for correct facing)
