@@ -7,7 +7,7 @@ local mission_testing = false  -- If true, all missions are unlocked
 local game_mode = "arcade"  -- "arcade" or "simulation"
 
 -- UI toggles
-local show_debug = true
+local show_debug = false
 local show_mission_ui = true
 local show_ship_collision_box = false  -- Toggle ship collision wireframe
 local show_cargo_debug = false  -- Toggle cargo debug info (temporary for Mission 3 debug)
@@ -917,8 +917,8 @@ function _update()
 			Menu.mission_progress.mission_1 = true
 			store("/appdata/mission_progress.pod", Menu.mission_progress)
 
-			-- Return to menu
-			Menu.active = true
+			-- Return to menu (fully reset to title screen)
+			Menu.init()
 			AudioManager.start_menu_music()
 		end
 		return  -- Don't update game while in cutscene
