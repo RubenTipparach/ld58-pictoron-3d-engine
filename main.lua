@@ -896,8 +896,11 @@ end
 
 -- Initialize menu at startup
 Menu.mission_testing = mission_testing
-Menu.init()
-AudioManager.start_menu_music()
+
+function _init()
+	Menu.init()
+	AudioManager.start_menu_music()
+end
 
 function _update()
 	-- Calculate delta time (time since last frame)
