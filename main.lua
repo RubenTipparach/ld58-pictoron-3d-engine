@@ -79,25 +79,10 @@ local Aliens = include("src/aliens.lua")
 local Bullets = include("src/bullets.lua")
 local Turret = include("src/turret.lua")
 local Cutscene = include("src/cutscene.lua")
+local AudioManager = include("src/audio_manager.lua")
 
--- Cache sound files at startup for performance
-local intro_music = fetch("sfx/introsong.sfx")
-local intro_music_addr = 0x80000  -- Use a dedicated address for intro music
-if intro_music then
-	intro_music:poke(intro_music_addr)  -- Load music data to this address
-end
-
-local level_music = fetch("sfx/firstlevelsong.sfx")
-local level_music_addr = 0xC0000  -- Use a separate address for level music
-if level_music then
-	level_music:poke(level_music_addr)  -- Load music data to this address
-end
-
-local level2_music = fetch("sfx/secondlevelsong.sfx")
-local level2_music_addr = 0x100000  -- Use another address for second level music
-if level2_music then
-	level2_music:poke(level2_music_addr)  -- Load music data to this address
-end
+-- Initialize audio system (loads all music files)
+AudioManager.init()
 
 -- Set shared module references
 Mission.LandingPads = LandingPads
@@ -826,14 +811,8 @@ local function start_mission(mission_num, mode)
 	death_timer = 0
 	smoke_spawn_timer = 0
 
-	-- Start level music at 50% volume
-	if mission_num == 5 and level2_music_addr then
-		-- Mission 5 uses second level song
-		music(1, nil, nil, level2_music_addr, 0.5)  -- Play pattern 0 from second level music at 50% volume
-	elseif level_music_addr then
-		-- All other missions use first level song
-		music(0, nil, nil, level_music_addr, 0.5)  -- Play pattern 0 from level music at 50% volume
-	end
+	-- Start level music
+	AudioManager.start_level_music(mission_num)
 
 	-- Start mission using missions module
 	Mission.reset()
@@ -917,13 +896,17 @@ end
 
 -- Initialize menu at startup
 Menu.mission_testing = mission_testing
-Menu.init(level_music_addr)
+Menu.init()
+AudioManager.start_menu_music()
 
 function _update()
 	-- Calculate delta time (time since last frame)
 	local current_time = time()
 	delta_time = current_time - last_time
 	last_time = current_time
+	
+	-- Update audio manager (handles fades)
+	AudioManager.update(delta_time)
 
 	-- Handle cutscene
 	if Cutscene.active then
@@ -936,6 +919,7 @@ function _update()
 
 			-- Return to menu
 			Menu.active = true
+			AudioManager.start_menu_music()
 		end
 		return  -- Don't update game while in cutscene
 	end
@@ -948,7 +932,8 @@ function _update()
 		elseif action == "story" then
 			-- Start story cutscene
 			Menu.active = false
-			Cutscene.start(1, intro_music_addr)
+			Cutscene.start(1)
+			AudioManager.start_cutscene_music()
 		end
 		return  -- Don't update game while in menu
 	end
@@ -1041,7 +1026,8 @@ function _update()
 			Mission.show_pause_menu = false
 			Menu.active = true
 			Menu.mission_testing = mission_testing
-			Menu.init(level_music_addr)
+			Menu.init()
+			AudioManager.start_menu_music()
 			-- Reset camera to initial menu state
 			camera.x = initial_camera_state.x
 			camera.y = initial_camera_state.y
@@ -1062,7 +1048,8 @@ function _update()
 			Weather.set_enabled(false)  -- Disable weather when mission complete
 			Menu.active = true
 			Menu.mission_testing = mission_testing
-			Menu.init(level_music_addr)
+			Menu.init()
+			AudioManager.start_menu_music()
 			-- Reset camera to initial menu state
 			camera.x = initial_camera_state.x
 			camera.y = initial_camera_state.y
@@ -1115,6 +1102,8 @@ function _update()
 			   key("a") or key("b") or key("c") or key("d") or key("e") or key("f") or
 			   key("w") or key("s") then
 				Menu.active = true
+				Menu.init()
+				AudioManager.start_menu_music()
 				current_game_state = GAME_STATE.PLAYING
 				death_timer = 0
 			end
@@ -1278,10 +1267,10 @@ function _update()
 	end
 
 	-- Play thruster sound if any thrusters are firing
-	local thruster_channel = 0  -- Dedicated channel for thruster sound
+	local thruster_channel = 4  -- Use channel 4 to avoid music channel conflicts (music uses 0-3)
 	if active_thruster_count > 0 then
-		-- Volume scales with number of active thrusters (0.25 to 1.0)
-		local volume = 0.25 + (active_thruster_count / 4) * 0.75
+		-- Volume scales with number of active thrusters (0.6 to 1.0) - increased for testing
+		local volume = 0.6 + (active_thruster_count / 4) * 0.4
 
 		-- Check if sound is already playing on this channel
 		local is_playing = (stat(464) & (1 << thruster_channel)) != 0

@@ -79,24 +79,20 @@ Cutscene.skip_used_this_frame = false
 Cutscene.default_sfx_addr = nil  -- Store default sfx address to restore later
 
 -- Initialize cutscene
-function Cutscene.start(scene_num, intro_addr)
+function Cutscene.start(scene_num)
 	Cutscene.active = true
 	Cutscene.current_scene = scene_num or 1
 	Cutscene.char_timer = 0
 	Cutscene.chars_shown = 0
 	Cutscene.scene_complete = false
 
-	-- Play intro music from custom base address
-	if intro_addr then
-		music(0, nil, nil, intro_addr)  -- Play pattern 0 from intro_addr
-	end
+	-- Music is now handled by AudioManager
 end
 
 -- Stop cutscene
 function Cutscene.stop()
 	Cutscene.active = false
-	-- Stop music when cutscene ends
-	music(-1)
+	-- Music transitions are now handled by AudioManager
 end
 
 -- Update cutscene (text reveal animation)
@@ -175,13 +171,11 @@ function Cutscene.draw()
 		y += Cutscene.LINE_HEIGHT
 	end
 
-	-- Show prompt when scene is complete
-	if Cutscene.scene_complete then
-		local prompt = "Z/SPACE TO CONTINUE"
-		local prompt_x = 240 - (#prompt * 2) - 20
-		local prompt_y = 250
-
-		-- Blink the prompt
+    -- Show prompt when scene is complete
+    if Cutscene.scene_complete then
+        local prompt = "PRESS Z TO CONTINUE"
+        local prompt_x = 240 - (#prompt * 2) - 20
+        local prompt_y = 250		-- Blink the prompt
 		if (time() * 2) % 1 > 0.5 then
 			-- Shadow
 			print(prompt, prompt_x + 1, prompt_y + 1, Cutscene.SHADOW_COLOR)
@@ -201,12 +195,11 @@ function Cutscene.check_input()
 		return false
 	end
 
-	-- Only advance on fresh key press (keyp detects first press, not held)
-	if keyp("space") or keyp("return") or keyp("x") or keyp("z") then
-		-- Move to next scene
-		Cutscene.current_scene += 1
-
-		if Cutscene.current_scene > #Cutscene.scenes then
+    -- Only advance on fresh key press (keyp detects first press, not held)
+    -- REMOVED: keyp("space") to prevent conflicts with main game controls
+    if keyp("return") or keyp("x") or keyp("z") then
+        -- Move to next scene
+        Cutscene.current_scene += 1		if Cutscene.current_scene > #Cutscene.scenes then
 			-- All scenes complete
 			Cutscene.stop()
 			return true  -- Signal that cutscene is done

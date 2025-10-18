@@ -176,7 +176,7 @@ local function generate_sphere(sprite_id)
 end
 
 -- Initialize menu
-function Menu.init(menu_music_addr)
+function Menu.init()
 	Menu.active = true
 	Menu.show_options = false  -- Reset to title screen
 	Menu.show_mode_select = false  -- Reset mode selection
@@ -184,10 +184,7 @@ function Menu.init(menu_music_addr)
 	Menu.selected_mode = 1  -- Default to Arcade
 	Menu.pending_mission = nil  -- Clear pending mission
 
-	-- Play menu music (pattern 1 from level music)
-	if menu_music_addr then
-		music(1, nil, nil, menu_music_addr)
-	end
+	-- Music is now handled by AudioManager
 
 	-- Load mission progress from storage (or create default)
 	if Menu.mission_testing then
