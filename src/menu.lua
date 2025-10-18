@@ -729,7 +729,7 @@ function Menu.draw(camera, render_mesh_func)
 		print_shadow(title, menu_x - title_width / 2, menu_y, 7)
 		menu_y += 20
 
-		-- Draw mode options
+		-- Draw mode options (names only)
 		for i, mode in ipairs(modes) do
 			local color = (i == Menu.selected_mode) and 11 or 6
 			local prefix = (i == Menu.selected_mode) and "> " or "  "
@@ -737,17 +737,20 @@ function Menu.draw(camera, render_mesh_func)
 			-- Mode name with drop shadow
 			print_shadow(prefix .. mode.name, 80, menu_y, color)
 			menu_y += 12
+		end
 
-			-- Mode description (only for selected) with drop shadow
-			if i == Menu.selected_mode then
-				local desc_lines = {}
-				for line in mode.desc:gmatch("[^\n]+") do
-					add(desc_lines, line)
-				end
-				for _, line in ipairs(desc_lines) do
-					print_shadow("  " .. line, 80, menu_y, 6)
-					menu_y += 8
-				end
+		-- Add space before description
+		menu_y += 8
+
+		-- Draw description for selected mode at fixed position
+		local selected_mode = modes[Menu.selected_mode]
+		if selected_mode then
+			local desc_lines = {}
+			for line in selected_mode.desc:gmatch("[^\n]+") do
+				add(desc_lines, line)
+			end
+			for _, line in ipairs(desc_lines) do
+				print_shadow("  " .. line, 80, menu_y, 6)
 				menu_y += 8
 			end
 		end

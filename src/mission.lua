@@ -1,5 +1,6 @@
 -- Mission module: Mission scripting and objective tracking
 local Cargo = include("src/cargo.lua")
+local AudioManager = include("src/audio_manager.lua")
 
 local Mission = {}
 
@@ -238,6 +239,15 @@ end
 -- Complete the mission
 function Mission.complete()
 	Mission.complete_flag = true
+	
+	-- Start mission complete music
+	print("Mission complete - starting music")
+	if AudioManager and AudioManager.start_mission_complete_music then
+		AudioManager.start_mission_complete_music()
+		print("Mission complete music started")
+	else
+		print("AudioManager not available")
+	end
 
 	-- Mission-specific completion text
 	local completion_text = "All cargo delivered"

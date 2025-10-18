@@ -1085,6 +1085,7 @@ function _update()
 		-- Transition to dead state after explosion duration
 		if death_explosion_timer >= DEATH_EXPLOSION_DURATION then
 			current_game_state = GAME_STATE.DEAD
+			AudioManager.start_death_music()
 			death_timer = 0
 		end
 

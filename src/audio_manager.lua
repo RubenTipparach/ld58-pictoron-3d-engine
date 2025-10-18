@@ -34,6 +34,11 @@ AudioManager.music_files = {
         file = "sfx/tom_lander.sfx",
         addr = 0x1C0000,
         data = nil
+    },
+    newsong = {
+        file = "sfx/newsong.sfx",
+        addr = 0x200000,
+        data = nil
     }
     -- Add more music files here as needed
 }
@@ -215,6 +220,18 @@ function AudioManager.start_level_music(mission_num)
     -- Add more mission->music mappings here
     
     AudioManager.transition_music(music_name, pattern, AudioManager.volumes.level_music, 0.4)
+end
+
+-- Start mission complete music
+function AudioManager.start_mission_complete_music()
+    print("AudioManager: Starting mission complete music")
+    AudioManager.play_music("newsong", 4, AudioManager.volumes.cutscene_music, 0)
+    print("AudioManager: Mission complete music started directly")
+end
+
+-- Start death music
+function AudioManager.start_death_music()
+    AudioManager.transition_music("newsong", 8, AudioManager.volumes.cutscene_music, 0.2)
 end
 
 function AudioManager.stop_all_audio()
