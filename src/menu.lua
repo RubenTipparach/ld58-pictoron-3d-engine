@@ -425,6 +425,8 @@ function Menu.update(delta_time)
 	if not Menu.show_options and not Menu.show_mode_select then
 		if btnp(4) or btnp(5) or key("return") or key("space") then  -- Z, X, Enter, Space
 			Menu.show_options = true
+			-- Signal to play first level music
+			return "play_level_music"
 		end
 		return
 	end

@@ -937,6 +937,9 @@ function _update()
 			Menu.active = false
 			Cutscene.start(1)
 			AudioManager.start_cutscene_music()
+		elseif action == "play_level_music" then
+			-- Play menu music when Z is pressed to show options
+			AudioManager.start_menu_music()
 		end
 		return  -- Don't update game while in menu
 	end
